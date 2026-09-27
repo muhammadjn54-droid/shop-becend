@@ -8,9 +8,23 @@ https://docs.djangoproject.com/en/6.1/howto/deployment/wsgi/
 """
 
 import os
-
 from django.core.wsgi import get_wsgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'shop_backend.settings')
 
 application = get_wsgi_application()
+app = application
+
+# Авто-миграция и создание superuser при первом запуске на Vercel Serverless
+if os.environ.get("VERCEL"):
+    try:
+        from django.core.management import call_command
+        from django.contrib.auth import get_user_model
+
+        call_command("migrate", interactive=False)
+        User = get_user_model()
+        if not User.objects.filter(username="admin").exists():
+            User.objects.create_superuser("admin", "admin@example.com", "admin123")
+    except Exception as e:
+        print("Vercel auto-migrate error:", e)
+

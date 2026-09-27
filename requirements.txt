@@ -4,3 +4,6 @@ djangorestframework-simplejwt==5.5.1
 drf-yasg==1.21.15
 Pillow==12.3.0
 django-filter==26.1
+django-cors-headers>=4.3.0
+whitenoise>=6.6.0
+
