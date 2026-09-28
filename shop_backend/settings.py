@@ -149,6 +149,10 @@ CLOUDINARY_ENABLED = all(
     ]
 )
 
+# Do not use ManifestStaticFilesStorage here. Swagger/Redoc may be rendered
+# inside a serverless function before a local manifest is available.
+STATICFILES_BACKEND = "whitenoise.storage.CompressedStaticFilesStorage"
+
 if CLOUDINARY_ENABLED:
     CLOUDINARY_STORAGE = {
         "CLOUD_NAME": CLOUDINARY_CLOUD_NAME,
@@ -160,7 +164,7 @@ if CLOUDINARY_ENABLED:
             "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
         },
         "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+            "BACKEND": STATICFILES_BACKEND,
         },
     }
 else:
@@ -169,7 +173,7 @@ else:
             "BACKEND": "django.core.files.storage.FileSystemStorage",
         },
         "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+            "BACKEND": STATICFILES_BACKEND,
         },
     }
 
