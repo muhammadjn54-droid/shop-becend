@@ -8,6 +8,10 @@ from rest_framework.test import APITestCase
 from .models import Product
 from sales.models import Sale
 
+import io
+from PIL import Image
+from django.core.files.uploadedfile import SimpleUploadedFile
+
 User = get_user_model()
 
 
@@ -25,6 +29,13 @@ class BaseTestCase(APITestCase):
             selling_price=Decimal("10.00"),
         )
 
+    def generate_image_file(self, name="test.png"):
+        file_obj = io.BytesIO()
+        image = Image.new("RGBA", size=(50, 50), color=(255, 0, 0))
+        image.save(file_obj, "png")
+        file_obj.seek(0)
+        return SimpleUploadedFile(name, file_obj.read(), content_type="image/png")
+
 
 class ProductCreationTests(BaseTestCase):
     def test_create_product(self):
@@ -41,6 +52,95 @@ class ProductCreationTests(BaseTestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["remaining_quantity"], 15)
+
+    def test_create_product_with_image_file(self):
+        img = self.generate_image_file("sample.png")
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Sprite",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 10,
+                "purchase_price": "6.00",
+                "selling_price": "8.00",
+                "image": img,
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNotNone(response.data["image"])
+        media_response = self.client.get(response.data["image"])
+        self.assertEqual(media_response.status_code, status.HTTP_200_OK)
+
+    def test_create_product_with_base64_image(self):
+        base64_png = (
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Pepsi",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 10,
+                "purchase_price": "5.00",
+                "selling_price": "7.00",
+                "image": base64_png,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNotNone(response.data["image"])
+
+    def test_create_product_with_empty_image_string(self):
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Mirinda",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 10,
+                "purchase_price": "5.00",
+                "selling_price": "7.00",
+                "image": "",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["image"])
+
+    def test_patch_product_preserves_existing_image_when_string_or_empty_passed(self):
+        img = self.generate_image_file("photo.png")
+        create_resp = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Water",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 10,
+                "purchase_price": "2.00",
+                "selling_price": "3.00",
+                "image": img,
+            },
+            format="multipart",
+        )
+        prod_id = create_resp.data["id"]
+        original_image = create_resp.data["image"]
+
+        # 1. PATCH с передачей того же URL не падает
+        patch_resp = self.client.patch(
+            reverse("product-detail", args=[prod_id]),
+            {"name": "Water Sparkling", "image": original_image},
+            format="json",
+        )
+        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(patch_resp.data["image"])
+
+        # 2. PATCH с пустой строкой не удаляет фото
+        patch_resp2 = self.client.patch(
+            reverse("product-detail", args=[prod_id]),
+            {"image": ""},
+            format="json",
+        )
+        self.assertEqual(patch_resp2.status_code, status.HTTP_200_OK)
+        self.assertIsNotNone(patch_resp2.data["image"])
 
     def test_cannot_reduce_received_below_sold(self):
         self.client.post(

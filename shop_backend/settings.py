@@ -6,7 +6,10 @@ from pathlib import Path
 from datetime import timedelta
 import os
 
-import dj_database_url
+try:
+    import dj_database_url
+except ImportError:
+    dj_database_url = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 IS_VERCEL = bool(os.environ.get("VERCEL"))
@@ -33,12 +36,24 @@ DEBUG = env_bool("DEBUG", default=not IS_VERCEL)
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
-    "localhost,127.0.0.1,.vercel.app",
+    "*,localhost,127.0.0.1,.vercel.app",
 )
 
 CSRF_TRUSTED_ORIGINS = env_list(
     "CSRF_TRUSTED_ORIGINS",
-    "http://localhost,http://127.0.0.1,https://*.vercel.app",
+    "http://localhost,http://127.0.0.1,http://localhost:5173,http://localhost:5174,https://*.vercel.app",
+)
+
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+
+CLOUDINARY_ENABLED = all(
+    [
+        CLOUDINARY_CLOUD_NAME,
+        CLOUDINARY_API_KEY,
+        CLOUDINARY_API_SECRET,
+    ]
 )
 
 INSTALLED_APPS = [
@@ -54,12 +69,23 @@ INSTALLED_APPS = [
     "rest_framework_simplejwt.token_blacklist",
     "drf_yasg",
     "django_filters",
-    "cloudinary_storage",
-    "cloudinary",
     "accounts",
     "products",
     "sales",
 ]
+
+if CLOUDINARY_ENABLED:
+    try:
+        import cloudinary
+        import cloudinary_storage
+
+        INSTALLED_APPS.insert(
+            INSTALLED_APPS.index("django.contrib.staticfiles"),
+            "cloudinary_storage",
+        )
+        INSTALLED_APPS.append("cloudinary")
+    except ImportError:
+        CLOUDINARY_ENABLED = False
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -73,11 +99,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = False
-CORS_ALLOWED_ORIGINS = env_list(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173",
-)
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "shop_backend.urls"
@@ -101,7 +123,7 @@ TEMPLATES = [
 WSGI_APPLICATION = "shop_backend.wsgi.application"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if DATABASE_URL:
+if DATABASE_URL and dj_database_url:
     DATABASES = {
         "default": dj_database_url.parse(
             DATABASE_URL,
@@ -135,19 +157,8 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
-MEDIA_ROOT = BASE_DIR / "media"
-
-CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
-CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
-CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
-
-CLOUDINARY_ENABLED = all(
-    [
-        CLOUDINARY_CLOUD_NAME,
-        CLOUDINARY_API_KEY,
-        CLOUDINARY_API_SECRET,
-    ]
-)
+MEDIA_ROOT = Path("/tmp/media") if IS_VERCEL else BASE_DIR / "media"
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Do not use ManifestStaticFilesStorage here. Swagger/Redoc may be rendered
 # inside a serverless function before a local manifest is available.

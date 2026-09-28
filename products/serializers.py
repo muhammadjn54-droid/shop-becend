@@ -1,11 +1,129 @@
+import base64
+import os
+import uuid
+import urllib.request
 from decimal import Decimal
+from urllib.parse import urlparse
 
+from django.core.files.base import ContentFile
 from rest_framework import serializers
 
 from .models import Product
 
 
+class FlexibleImageField(serializers.ImageField):
+    """
+    Универсальное поле для изображения товара.
+    Поддерживает:
+    - Загрузку файла (multipart/form-data)
+    - Base64 строку (data:image/...)
+    - Ссылку на фото из интернета (http://... или https://...)
+    - Пустую строку ("" / "null" / "undefined")
+    - Сохранение существующего фото при обновлении товара (PUT / PATCH)
+    """
+
+    def to_internal_value(self, data):
+        # 1. Пустые значения
+        if data in ("", "null", "undefined", None):
+            if (
+                self.parent
+                and getattr(self.parent, "instance", None)
+                and self.parent.instance.image
+            ):
+                return self.parent.instance.image
+            return None
+
+        # 2. Строковые данные (Base64, URL, имя существующего файла)
+        if isinstance(data, str):
+            clean_str = data.strip()
+            if not clean_str or clean_str in ("", "null", "undefined"):
+                if (
+                    self.parent
+                    and getattr(self.parent, "instance", None)
+                    and self.parent.instance.image
+                ):
+                    return self.parent.instance.image
+                return None
+
+            # Проверяем, не является ли строка текущим изображением товара
+            if (
+                self.parent
+                and getattr(self.parent, "instance", None)
+                and self.parent.instance.image
+            ):
+                current = self.parent.instance.image
+                try:
+                    if (
+                        clean_str == current.name
+                        or (hasattr(current, "url") and current.url in clean_str)
+                        or (current.name and current.name in clean_str)
+                    ):
+                        return current
+                except Exception:
+                    pass
+
+            # Base64 изображение
+            if clean_str.startswith("data:image"):
+                try:
+                    header, img_b64 = clean_str.split(";base64,")
+                    raw_ext = header.split("/")[-1].lower()
+                    if raw_ext in ("jpeg", "pjpeg"):
+                        ext = "jpg"
+                    elif raw_ext in ("png", "webp", "jpg"):
+                        ext = raw_ext
+                    else:
+                        ext = "jpg"
+
+                    file_name = f"{uuid.uuid4().hex[:12]}.{ext}"
+                    decoded = base64.b64decode(img_b64)
+                    file_obj = ContentFile(decoded, name=file_name)
+                    return super().to_internal_value(file_obj)
+                except Exception as exc:
+                    raise serializers.ValidationError(
+                        f"Не удалось распознать base64 изображение: {exc}"
+                    )
+
+            # URL из интернета (http / https)
+            parsed = urlparse(clean_str)
+            if parsed.scheme in ("http", "https"):
+                try:
+                    req = urllib.request.Request(
+                        clean_str, headers={"User-Agent": "Mozilla/5.0"}
+                    )
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        content_type = resp.headers.get("content-type", "").lower()
+                        ext = "jpg"
+                        if "png" in content_type:
+                            ext = "png"
+                        elif "webp" in content_type:
+                            ext = "webp"
+                        elif "jpeg" in content_type or "jpg" in content_type:
+                            ext = "jpg"
+                        else:
+                            path_ext = os.path.splitext(parsed.path)[1].lstrip(".").lower()
+                            if path_ext in ("jpg", "jpeg", "png", "webp"):
+                                ext = "jpg" if path_ext == "jpeg" else path_ext
+
+                        file_name = f"{uuid.uuid4().hex[:12]}.{ext}"
+                        file_obj = ContentFile(resp.read(), name=file_name)
+                        return super().to_internal_value(file_obj)
+                except Exception as exc:
+                    if (
+                        self.parent
+                        and getattr(self.parent, "instance", None)
+                        and self.parent.instance.image
+                    ):
+                        return self.parent.instance.image
+                    raise serializers.ValidationError(
+                        f"Не удалось загрузить изображение по ссылке: {exc}"
+                    )
+
+        # 3. Обычный загруженный файл через форму
+        return super().to_internal_value(data)
+
+
 class ProductSerializer(serializers.ModelSerializer):
+    image = FlexibleImageField(required=False, allow_null=True)
     remaining_quantity = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     sold_cost = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -45,6 +163,19 @@ class ProductSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         )
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if instance.image:
+            request = self.context.get("request")
+            if request is not None:
+                ret["image"] = request.build_absolute_uri(instance.image.url)
+            else:
+                try:
+                    ret["image"] = instance.image.url
+                except Exception:
+                    pass
+        return ret
 
     def validate_quantity_received(self, value):
         if value < 0:
