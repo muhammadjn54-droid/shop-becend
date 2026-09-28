@@ -1,32 +1,46 @@
 """
 Django settings for shop_backend project.
-Простой backend для учёта товаров, склада и продаж.
 """
 
 from pathlib import Path
 from datetime import timedelta
 import os
 
+import dj_database_url
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
-# -----------------------------------------------------------------
-# БЕЗОПАСНОСТЬ (для разработки; для продакшена вынесите в переменные окружения)
-# -----------------------------------------------------------------
-SECRET_KEY = "django-insecure-change-this-key-in-production-1234567890"
 
-DEBUG = True
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
-ALLOWED_HOSTS = ["*"]
 
-CSRF_TRUSTED_ORIGINS = [
-    "https://*.vercel.app",
-    "http://127.0.0.1",
-    "http://localhost",
-]
+def env_list(name, default=""):
+    value = os.environ.get(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
 
-# -----------------------------------------------------------------
-# ПРИЛОЖЕНИЯ
-# -----------------------------------------------------------------
+
+SECRET_KEY = os.environ.get(
+    "SECRET_KEY",
+    "django-insecure-local-development-only-change-me",
+)
+
+DEBUG = env_bool("DEBUG", default=not IS_VERCEL)
+
+ALLOWED_HOSTS = env_list(
+    "ALLOWED_HOSTS",
+    "localhost,127.0.0.1,.vercel.app",
+)
+
+CSRF_TRUSTED_ORIGINS = env_list(
+    "CSRF_TRUSTED_ORIGINS",
+    "http://localhost,http://127.0.0.1,https://*.vercel.app",
+)
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -34,14 +48,14 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # сторонние приложения
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
     "rest_framework_simplejwt.token_blacklist",
     "drf_yasg",
     "django_filters",
-    # наши приложения
+    "cloudinary_storage",
+    "cloudinary",
     "accounts",
     "products",
     "sales",
@@ -59,7 +73,11 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = env_list(
+    "CORS_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+)
 CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "shop_backend.urls"
@@ -82,41 +100,23 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "shop_backend.wsgi.application"
 
-# -----------------------------------------------------------------
-# БАЗА ДАННЫХ
-# -----------------------------------------------------------------
-IS_VERCEL = "VERCEL" in os.environ
-
-if IS_VERCEL:
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL:
     DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": "/tmp/db.sqlite3",
-        }
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
 else:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": "/tmp/db.sqlite3" if IS_VERCEL else BASE_DIR / "db.sqlite3",
         }
     }
 
-# Пример конфигурации PostgreSQL (раскомментируйте при необходимости):
-# DATABASES = {
-#     "default": {
-#         "ENGINE": "django.db.backends.postgresql",
-#         "NAME": os.environ.get("DB_NAME", "shop_db"),
-#         "USER": os.environ.get("DB_USER", "postgres"),
-#         "PASSWORD": os.environ.get("DB_PASSWORD", "postgres"),
-#         "HOST": os.environ.get("DB_HOST", "localhost"),
-#         "PORT": os.environ.get("DB_PORT", "5432"),
-#     }
-# }
-
-# -----------------------------------------------------------------
-# КАСТОМНАЯ МОДЕЛЬ ПОЛЬЗОВАТЕЛЯ
-# -----------------------------------------------------------------
 AUTH_USER_MODEL = "accounts.CustomUser"
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -126,29 +126,55 @@ AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
-# -----------------------------------------------------------------
-# ИНТЕРНАЦИОНАЛИЗАЦИЯ
-# -----------------------------------------------------------------
 LANGUAGE_CODE = "ru"
 TIME_ZONE = "Asia/Dushanbe"
 USE_I18N = True
 USE_TZ = True
 
-# -----------------------------------------------------------------
-# СТАТИКА И МЕДИА
-# -----------------------------------------------------------------
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
+CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
+
+CLOUDINARY_ENABLED = all(
+    [
+        CLOUDINARY_CLOUD_NAME,
+        CLOUDINARY_API_KEY,
+        CLOUDINARY_API_SECRET,
+    ]
+)
+
+if CLOUDINARY_ENABLED:
+    CLOUDINARY_STORAGE = {
+        "CLOUD_NAME": CLOUDINARY_CLOUD_NAME,
+        "API_KEY": CLOUDINARY_API_KEY,
+        "API_SECRET": CLOUDINARY_API_SECRET,
+    }
+    STORAGES = {
+        "default": {
+            "BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+else:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# -----------------------------------------------------------------
-# DJANGO REST FRAMEWORK
-# -----------------------------------------------------------------
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
@@ -170,9 +196,6 @@ REST_FRAMEWORK = {
     "PAGE_SIZE": 20,
 }
 
-# -----------------------------------------------------------------
-# SIMPLE JWT
-# -----------------------------------------------------------------
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=6),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
@@ -181,9 +204,6 @@ SIMPLE_JWT = {
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
-# -----------------------------------------------------------------
-# SWAGGER (drf-yasg)
-# -----------------------------------------------------------------
 SWAGGER_SETTINGS = {
     "SECURITY_DEFINITIONS": {
         "Bearer": {
@@ -197,9 +217,6 @@ SWAGGER_SETTINGS = {
     "PERSIST_AUTH": True,
 }
 
-# -----------------------------------------------------------------
-# ЗАГРУЗКА ФАЙЛОВ (ограничение размера изображения — 5 MB)
-# -----------------------------------------------------------------
 MAX_IMAGE_SIZE_MB = 5
 ALLOWED_IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"]
 
