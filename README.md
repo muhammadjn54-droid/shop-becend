@@ -1,220 +1,114 @@
 # Shop Inventory API
 
-Backend на Django + Django REST Framework для учёта товаров, склада и продаж.
-Swagger, JWT-авторизация, атомарные продажи, статистика и дашборд.
+Django REST Framework backend for products, stock, sales, returns and shop statistics.
 
-## 1. Структура проекта
+## Main endpoints
 
+- `POST /api/auth/register/`
+- `POST /api/auth/login/`
+- `POST /api/auth/token/refresh/`
+- `GET /api/auth/me/`
+- `POST /api/auth/logout/`
+- `GET/POST /api/products/`
+- `GET/PATCH/PUT/DELETE /api/products/{id}/`
+- `POST /api/products/{id}/sell/`
+- `POST /api/products/{id}/add-stock/`
+- `POST /api/products/{id}/return/`
+- `GET /api/products/{id}/sales/`
+- `GET /api/products/low-stock/`
+- `GET /api/sales/`
+- `GET /api/sales/{id}/`
+- `GET /api/statistics/`
+- `GET /api/dashboard/`
+
+Swagger is available at `/`, `/swagger/` and Redoc at `/redoc/`.
+
+## Accounting logic
+
+Each sale stores a financial snapshot at the moment of sale:
+
+- `price_per_item` — actual sale price
+- `purchase_price_per_item` — purchase price at that moment
+- `total_amount = quantity * price_per_item`
+- `cost_amount = quantity * purchase_price_per_item`
+- `profit` and `loss` are stored on the sale
+
+Product revenue, cost, profit and loss are calculated from real sales and reduced by real returns. Changing the current product price later does not rewrite old sale history.
+
+Returns are stored in `SaleReturn`. `POST /api/products/{id}/return/` accepts:
+
+```json
+{
+  "quantity": 1
+}
 ```
-shop_backend/
-├── manage.py
-├── requirements.txt
-├── .gitignore
-├── shop_backend/          # настройки проекта
-│   ├── settings.py
-│   ├── urls.py            # + Swagger/Redoc + media
-│   ├── wsgi.py
-│   └── asgi.py
-├── accounts/               # регистрация, вход, JWT
-│   ├── models.py           # CustomUser
-│   ├── serializers.py
-│   ├── views.py
-│   ├── urls.py
-│   ├── admin.py
-│   └── tests.py
-├── products/                # товары, склад, статистика, дашборд
-│   ├── models.py             # Product + вычисляемые свойства
-│   ├── serializers.py
-│   ├── views.py              # CRUD, sell, add-stock, return, low-stock, statistics, dashboard
-│   ├── urls.py
-│   ├── admin.py
-│   └── tests.py
-├── sales/                    # продажи
-│   ├── models.py             # Sale
-│   ├── serializers.py
-│   ├── views.py
-│   ├── urls.py
-│   ├── admin.py
-│   └── tests.py
-└── media/                    # сюда сохраняются загруженные фото товаров
-```
 
-## 2. Запуск проекта
+Optional `sale_id` can be supplied. Without it, returns are applied to the newest available sales first (LIFO).
+
+## Local setup
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-
+source .venv/bin/activate
 pip install -r requirements.txt
-
-python manage.py makemigrations
 python manage.py migrate
-
-python manage.py createsuperuser
-
 python manage.py runserver
 ```
 
-Swagger UI: http://127.0.0.1:8000/swagger/
-Redoc:      http://127.0.0.1:8000/redoc/
-Admin:      http://127.0.0.1:8000/admin/
+## Production environment
 
-По умолчанию используется SQLite (файл `db.sqlite3`, создаётся автоматически).
-Чтобы переключиться на PostgreSQL — раскомментируйте блок `DATABASES` в
-`shop_backend/settings.py` и задайте переменные окружения `DB_NAME`,
-`DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`.
+Never commit real secrets. Configure them in Vercel Environment Variables.
 
-Запуск тестов:
+Recommended variables:
+
+```env
+SECRET_KEY=strong-random-secret
+DEBUG=False
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME
+ALLOWED_HOSTS=shop-becend.vercel.app,.vercel.app
+CORS_ALLOWED_ORIGINS=https://YOUR-FRONTEND.vercel.app
+CSRF_TRUSTED_ORIGINS=https://shop-becend.vercel.app,https://YOUR-FRONTEND.vercel.app
+CLOUDINARY_CLOUD_NAME=...
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
+```
+
+### PostgreSQL
+
+If `DATABASE_URL` is set, the project uses PostgreSQL through `dj-database-url`. Local development falls back to SQLite.
+
+Vercel also has a SQLite fallback only so the deployment can boot before configuration, but `/tmp` is not persistent and must not be used for real production data. Set `DATABASE_URL` before using the application with real data.
+
+### Product images
+
+If all three Cloudinary variables are configured, uploaded product images use Cloudinary storage.
+
+Without them, local filesystem storage is used. Vercel filesystem is not persistent, so Cloudinary or another persistent object storage should be configured in production.
+
+## Deploy / migration
+
+After changing models:
 
 ```bash
+python manage.py migrate
+python manage.py check
 python manage.py test
 ```
 
-## 3. Авторизация
-
-Все endpoint'ы товаров и продаж требуют авторизации через JWT.
-
-1. Зарегистрируйтесь: `POST /api/auth/register/` — в ответе сразу придут `access` и `refresh` токены.
-2. Либо войдите: `POST /api/auth/login/`.
-3. Каждый запрос отправляйте с заголовком:
+The migration `sales/0002_sale_snapshots_and_returns.py` backfills old sales using the already stored financial values:
 
 ```
+cost_amount = total_amount - profit + loss
+```
+
+This preserves old accounting as accurately as the existing data allows.
+
+## JWT
+
+Send protected requests with:
+
+```http
 Authorization: Bearer <access_token>
 ```
 
-В Swagger нажмите кнопку **Authorize** и введите `Bearer <ваш_access_token>`.
-
-Каждый пользователь видит и может изменять только свои товары и продажи.
-
-### Auth endpoints
-
-| Метод | URL | Описание |
-|---|---|---|
-| POST | `/api/auth/register/` | Регистрация (`username`, `email`, `password`, `password2`) |
-| POST | `/api/auth/login/` | Вход (`username`, `password`) → `access`, `refresh` |
-| POST | `/api/auth/token/refresh/` | Обновить `access` токен по `refresh` |
-| GET  | `/api/auth/me/` | Текущий пользователь |
-| POST | `/api/auth/logout/` | Выход (`refresh` попадает в blacklist) |
-
-## 4. Товары (Products)
-
-| Метод | URL | Описание |
-|---|---|---|
-| GET | `/api/products/` | Список товаров (поиск `?search=`, сортировка `?ordering=`, фильтр по `arrival_date`/`name`) |
-| POST | `/api/products/` | Создать товар (multipart/form-data, можно с фото) |
-| GET | `/api/products/{id}/` | Один товар |
-| PUT/PATCH | `/api/products/{id}/` | Изменить товар |
-| DELETE | `/api/products/{id}/` | Удалить товар |
-| GET | `/api/products/low-stock/` | Товары с остатком ≤ 5 |
-| POST | `/api/products/{id}/sell/` | Продать товар |
-| POST | `/api/products/{id}/add-stock/` | Зарегистрировать новую партию |
-| POST | `/api/products/{id}/return/` | Оформить возврат |
-| GET | `/api/products/{id}/sales/` | История продаж товара |
-
-## 5. Продажи (Sales)
-
-| Метод | URL | Описание |
-|---|---|---|
-| GET | `/api/sales/` | Все продажи текущего пользователя |
-| GET | `/api/sales/{id}/` | Одна продажа |
-
-## 6. Статистика
-
-| Метод | URL | Описание |
-|---|---|---|
-| GET | `/api/statistics/` | Общая статистика магазина |
-| GET | `/api/dashboard/` | Сводная панель + последние продажи + топ-5 товаров |
-
-## 7. Формулы простыми словами
-
-**Остаток товара**
-```
-remaining_quantity = quantity_received - quantity_sold
-```
-Сколько единиц товара физически лежит на складе прямо сейчас: сколько пришло минус сколько уже продано.
-
-**Выручка**
-```
-revenue = quantity_sold * selling_price
-```
-Сколько денег покупатели заплатили за проданный товар.
-
-**Себестоимость проданного товара**
-```
-sold_cost = quantity_sold * purchase_price
-```
-Во сколько магазину обошлась закупка того количества товара, которое уже продано.
-
-**Прибыль**
-```
-profit = revenue - sold_cost, если revenue > sold_cost, иначе 0
-```
-Разница между тем, что получили от продажи, и тем, что потратили на закупку. Если продали дороже, чем купили — это прибыль.
-
-**Убыток**
-```
-loss = sold_cost - revenue, если sold_cost > revenue, иначе 0
-```
-Обратная ситуация: продали дешевле, чем купили — разница считается убытком.
-
-**Прибыль/убыток с одной единицы товара**
-```
-profit_per_item = selling_price - purchase_price
-```
-Показывает маржу на одну единицу товара — положительное число означает прибыль с каждой проданной штуки, отрицательное — убыток.
-
-## 8. Пример полного цикла запросов
-
-```bash
-# 1. Регистрация
-curl -X POST http://127.0.0.1:8000/api/auth/register/ \
-  -H "Content-Type: application/json" \
-  -d '{"username":"shopowner","password":"Str0ngPass!123","password2":"Str0ngPass!123"}'
-# → в ответе: access, refresh
-
-# 2. Создание товара (с фото)
-curl -X POST http://127.0.0.1:8000/api/products/ \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -F "name=Coca-Cola" \
-  -F "arrival_date=2026-09-27" \
-  -F "quantity_received=20" \
-  -F "purchase_price=8" \
-  -F "selling_price=10" \
-  -F "image=@cola.png"
-
-# 3. Продажа 3 штук
-curl -X POST http://127.0.0.1:8000/api/products/1/sell/ \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"quantity": 3}'
-# → remaining_quantity: 17, revenue: 30, sold_cost: 24, profit: 6, loss: 0
-
-# 4. Поступление новой партии
-curl -X POST http://127.0.0.1:8000/api/products/1/add-stock/ \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"quantity": 10}'
-
-# 5. Возврат товара
-curl -X POST http://127.0.0.1:8000/api/products/1/return/ \
-  -H "Authorization: Bearer <ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"quantity": 1}'
-
-# 6. Статистика магазина
-curl http://127.0.0.1:8000/api/statistics/ -H "Authorization: Bearer <ACCESS_TOKEN>"
-
-# 7. Дашборд
-curl http://127.0.0.1:8000/api/dashboard/ -H "Authorization: Bearer <ACCESS_TOKEN>"
-```
-
-## 9. Что уже проверено
-
-Проект был протестирован вживую в процессе разработки:
-- регистрация и вход возвращают рабочие JWT токены;
-- создание товара через multipart/form-data с реальным файлом изображения;
-- изображение действительно сохраняется и доступно по `/media/...`;
-- продажа корректно уменьшает остаток и рассчитывает прибыль/убыток;
-- попытка продать больше, чем есть на складе, возвращает 400 с понятным сообщением;
-- `/api/statistics/` и `/api/dashboard/` возвращают верные агрегированные числа;
-- 14 автотестов (`python manage.py test`) проходят успешно.
+Every product and sale query is scoped to `request.user`.
