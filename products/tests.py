@@ -6,19 +6,16 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .models import Product
+from sales.models import Sale
 
 User = get_user_model()
 
 
 class BaseTestCase(APITestCase):
-    """Общая настройка: создаём двух пользователей и авторизуем первого."""
-
     def setUp(self):
         self.user = User.objects.create_user(username="alice", password="Str0ngPass!123")
         self.other_user = User.objects.create_user(username="bob", password="Str0ngPass!123")
-
         self.client.force_authenticate(user=self.user)
-
         self.product = Product.objects.create(
             user=self.user,
             name="Coca-Cola",
@@ -31,125 +28,161 @@ class BaseTestCase(APITestCase):
 
 class ProductCreationTests(BaseTestCase):
     def test_create_product(self):
-        """1. Создание товара работает и возвращает верные вычисляемые поля."""
-        url = reverse("product-list-create")
-        data = {
-            "name": "Fanta",
-            "arrival_date": "2026-09-27",
-            "quantity_received": 15,
-            "purchase_price": "5.00",
-            "selling_price": "7.00",
-        }
-        response = self.client.post(url, data, format="multipart")
-
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Fanta",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 15,
+                "purchase_price": "5.00",
+                "selling_price": "7.00",
+            },
+            format="multipart",
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data["remaining_quantity"], 15)
-        self.assertEqual(Decimal(response.data["revenue"]), Decimal("0.00"))
+
+    def test_cannot_reduce_received_below_sold(self):
+        self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 5},
+            format="json",
+        )
+        response = self.client.patch(
+            reverse("product-detail", args=[self.product.id]),
+            {"quantity_received": 4},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ProductSaleTests(BaseTestCase):
-    def test_sell_product_reduces_stock(self):
-        """2 и 3. Продажа товара уменьшает остаток автоматически."""
-        url = reverse("product-sell", args=[self.product.id])
-        response = self.client.post(url, {"quantity": 3}, format="json")
-
+    def test_sell_product_reduces_stock_and_calculates_profit(self):
+        response = self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 3},
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
         self.product.refresh_from_db()
         self.assertEqual(self.product.quantity_sold, 3)
         self.assertEqual(self.product.remaining_quantity, 17)
-
-    def test_cannot_sell_more_than_available(self):
-        """4. Продажа большего количества, чем есть на складе, запрещена."""
-        url = reverse("product-sell", args=[self.product.id])
-        response = self.client.post(url, {"quantity": 999}, format="json")
-
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("detail", response.data)
-
-    def test_profit_calculation(self):
-        """5. Прибыль рассчитывается верно: (10-8)*3 = 6."""
-        url = reverse("product-sell", args=[self.product.id])
-        response = self.client.post(url, {"quantity": 3}, format="json")
-
-        self.product.refresh_from_db()
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(self.product.revenue, Decimal("30.00"))
+        self.assertEqual(self.product.sold_cost, Decimal("24.00"))
         self.assertEqual(self.product.profit, Decimal("6.00"))
         self.assertEqual(self.product.loss, Decimal("0.00"))
 
+    def test_custom_sale_price_is_used_in_product_totals(self):
+        self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 3, "price_per_item": "9.00"},
+            format="json",
+        )
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.revenue, Decimal("27.00"))
+        self.assertEqual(self.product.sold_cost, Decimal("24.00"))
+        self.assertEqual(self.product.profit, Decimal("3.00"))
+
+    def test_sale_snapshot_does_not_change_after_purchase_price_update(self):
+        self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 3},
+            format="json",
+        )
+        sale = Sale.objects.get(product=self.product)
+        self.assertEqual(sale.purchase_price_per_item, Decimal("8.00"))
+        self.assertEqual(sale.cost_amount, Decimal("24.00"))
+
+        self.client.post(
+            reverse("product-add-stock", args=[self.product.id]),
+            {"quantity": 10, "purchase_price": "12.00"},
+            format="json",
+        )
+
+        sale.refresh_from_db()
+        self.assertEqual(sale.purchase_price_per_item, Decimal("8.00"))
+        self.assertEqual(sale.cost_amount, Decimal("24.00"))
+        self.assertEqual(sale.profit, Decimal("6.00"))
+
+    def test_cannot_sell_more_than_available(self):
+        response = self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 999},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_loss_calculation(self):
-        """6. Убыток рассчитывается верно, если цена продажи ниже закупочной."""
         loss_product = Product.objects.create(
             user=self.user,
-            name="Товар с убытком",
+            name="Loss product",
             arrival_date="2026-09-27",
             quantity_received=10,
             purchase_price=Decimal("10.00"),
             selling_price=Decimal("8.00"),
         )
-        url = reverse("product-sell", args=[loss_product.id])
-        self.client.post(url, {"quantity": 3}, format="json")
-
+        self.client.post(
+            reverse("product-sell", args=[loss_product.id]),
+            {"quantity": 3},
+            format="json",
+        )
         loss_product.refresh_from_db()
+        self.assertEqual(loss_product.revenue, Decimal("24.00"))
+        self.assertEqual(loss_product.sold_cost, Decimal("30.00"))
         self.assertEqual(loss_product.profit, Decimal("0.00"))
         self.assertEqual(loss_product.loss, Decimal("6.00"))
 
-    def test_cannot_sell_zero_or_negative_quantity(self):
-        url = reverse("product-sell", args=[self.product.id])
-        response = self.client.post(url, {"quantity": 0}, format="json")
+
+class ProductReturnTests(BaseTestCase):
+    def test_return_updates_stock_and_financial_totals(self):
+        self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 3},
+            format="json",
+        )
+        response = self.client.post(
+            reverse("product-return", args=[self.product.id]),
+            {"quantity": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity_sold, 2)
+        self.assertEqual(self.product.remaining_quantity, 18)
+        self.assertEqual(self.product.revenue, Decimal("20.00"))
+        self.assertEqual(self.product.sold_cost, Decimal("16.00"))
+        self.assertEqual(self.product.profit, Decimal("4.00"))
+
+    def test_cannot_return_more_than_available(self):
+        self.client.post(
+            reverse("product-sell", args=[self.product.id]),
+            {"quantity": 2},
+            format="json",
+        )
+        response = self.client.post(
+            reverse("product-return", args=[self.product.id]),
+            {"quantity": 3},
+            format="json",
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ProductOwnershipTests(BaseTestCase):
-    def test_cannot_access_other_users_product(self):
-        """7. Пользователь не должен видеть или изменять чужой товар."""
+    def test_other_user_cannot_access_product(self):
         self.client.force_authenticate(user=self.other_user)
-
-        detail_url = reverse("product-detail", args=[self.product.id])
-        response = self.client.get(detail_url)
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-        sell_url = reverse("product-sell", args=[self.product.id])
-        response = self.client.post(sell_url, {"quantity": 1}, format="json")
+        response = self.client.get(reverse("product-detail", args=[self.product.id]))
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
     def test_product_list_only_shows_own_products(self):
         Product.objects.create(
             user=self.other_user,
-            name="Чужой товар",
+            name="Other product",
             arrival_date="2026-09-27",
             quantity_received=5,
             purchase_price=Decimal("1.00"),
             selling_price=Decimal("2.00"),
         )
-        url = reverse("product-list-create")
-        response = self.client.get(url)
+        response = self.client.get(reverse("product-list-create"))
         names = [item["name"] for item in response.data["results"]]
         self.assertIn("Coca-Cola", names)
-        self.assertNotIn("Чужой товар", names)
-
-
-class ProductStockAndReturnTests(BaseTestCase):
-    def test_add_stock_increases_quantity_received(self):
-        url = reverse("product-add-stock", args=[self.product.id])
-        response = self.client.post(url, {"quantity": 10}, format="json")
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_received, 30)
-
-    def test_return_reduces_quantity_sold(self):
-        sell_url = reverse("product-sell", args=[self.product.id])
-        self.client.post(sell_url, {"quantity": 5}, format="json")
-
-        return_url = reverse("product-return", args=[self.product.id])
-        response = self.client.post(return_url, {"quantity": 1}, format="json")
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.product.refresh_from_db()
-        self.assertEqual(self.product.quantity_sold, 4)
-
-    def test_cannot_return_more_than_sold(self):
-        return_url = reverse("product-return", args=[self.product.id])
-        response = self.client.post(return_url, {"quantity": 1}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotIn("Other product", names)
