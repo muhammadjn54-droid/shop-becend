@@ -6,14 +6,6 @@ from .models import Product
 
 
 class ProductSerializer(serializers.ModelSerializer):
-    """
-    Основной сериализатор товара.
-
-    Вычисляемые поля (remaining_quantity, revenue, sold_cost, profit, loss)
-    доступны только для чтения — их нельзя изменить напрямую через API,
-    они всегда рассчитываются "на лету" из модели.
-    """
-
     remaining_quantity = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     sold_cost = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -57,6 +49,10 @@ class ProductSerializer(serializers.ModelSerializer):
     def validate_quantity_received(self, value):
         if value < 0:
             raise serializers.ValidationError("Количество не может быть отрицательным")
+        if self.instance and value < self.instance.quantity_sold:
+            raise serializers.ValidationError(
+                "Количество поступившего товара не может быть меньше уже проданного"
+            )
         return value
 
     def validate_purchase_price(self, value):
@@ -71,8 +67,6 @@ class ProductSerializer(serializers.ModelSerializer):
 
 
 class SellSerializer(serializers.Serializer):
-    """Тело запроса для продажи товара: POST /api/products/{id}/sell/"""
-
     quantity = serializers.IntegerField(min_value=1)
     price_per_item = serializers.DecimalField(
         max_digits=12, decimal_places=2, required=False, min_value=Decimal("0")
@@ -80,8 +74,6 @@ class SellSerializer(serializers.Serializer):
 
 
 class AddStockSerializer(serializers.Serializer):
-    """Тело запроса для поступления новой партии: POST /api/products/{id}/add-stock/"""
-
     quantity = serializers.IntegerField(min_value=1)
     purchase_price = serializers.DecimalField(
         max_digits=12, decimal_places=2, required=False, min_value=Decimal("0")
@@ -89,6 +81,5 @@ class AddStockSerializer(serializers.Serializer):
 
 
 class ReturnSerializer(serializers.Serializer):
-    """Тело запроса для возврата товара: POST /api/products/{id}/return/"""
-
     quantity = serializers.IntegerField(min_value=1)
+    sale_id = serializers.IntegerField(min_value=1, required=False)
