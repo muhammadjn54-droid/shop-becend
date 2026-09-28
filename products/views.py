@@ -8,9 +8,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_yasg.utils import swagger_auto_schema
 
-from .models import Product
+from .models import Product, ProductImage
 from .serializers import (
     ProductSerializer,
+    ProductImageSerializer,
+    FlexibleImageField,
     SellSerializer,
     AddStockSerializer,
     ReturnSerializer,
@@ -314,4 +316,111 @@ class DashboardView(APIView):
                 "recent_sales": SaleSerializer(recent_sales, many=True).data,
                 "top_products": ProductSerializer(top_products, many=True).data,
             }
+        )
+
+
+class ProductImageUploadView(APIView):
+    """
+    POST /api/products/{id}/images/
+    Загрузить одну или несколько фотографий к товару (поддерживает > 5 фото).
+    """
+
+    def post(self, request, pk):
+        product = get_object_or_404(Product, id=pk, user=request.user)
+
+        images_list = []
+        if hasattr(request.data, "getlist"):
+            images_list = (
+                request.data.getlist("images")
+                or request.data.getlist("uploaded_images")
+            )
+        if not images_list and "images" in request.data:
+            val = request.data.get("images")
+            if isinstance(val, list):
+                images_list = val
+            elif val:
+                images_list = [val]
+        if not images_list and hasattr(request, "FILES"):
+            images_list = (
+                request.FILES.getlist("images")
+                or request.FILES.getlist("uploaded_images")
+                or request.FILES.getlist("image")
+            )
+        if not images_list and "image" in request.data:
+            images_list = [request.data.get("image")]
+
+        if not images_list:
+            return Response(
+                {"detail": "Не передано ни одного изображения"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        field = FlexibleImageField()
+        created_images = []
+        for img_item in images_list:
+            if not img_item:
+                continue
+            try:
+                processed_file = field.to_internal_value(img_item)
+                if processed_file:
+                    img_obj = ProductImage.objects.create(
+                        product=product, image=processed_file
+                    )
+                    created_images.append(img_obj)
+            except Exception as e:
+                return Response(
+                    {"detail": f"Ошибка обработки изображения: {e}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if not product.image and product.images.exists():
+            product.image = product.images.first().image
+            product.save(update_fields=["image"])
+
+        return Response(
+            {
+                "message": f"Успешно добавлено изображений: {len(created_images)}",
+                "images": ProductImageSerializer(
+                    product.images.all(), many=True, context={"request": request}
+                ).data,
+                "product": ProductSerializer(
+                    product, context={"request": request}
+                ).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProductImageDeleteView(APIView):
+    """
+    DELETE /api/products/{id}/images/{image_id}/
+    Удалить конкретную фотографию товара.
+    """
+
+    def delete(self, request, pk, image_id):
+        product = get_object_or_404(Product, id=pk, user=request.user)
+        img_obj = get_object_or_404(ProductImage, id=image_id, product=product)
+        was_main = bool(
+            product.image
+            and product.image.name
+            and (img_obj.image.name == product.image.name)
+        )
+        img_obj.delete()
+
+        if was_main:
+            remaining = product.images.first()
+            product.image = remaining.image if remaining else None
+            product.save(update_fields=["image"])
+
+        return Response(
+            {
+                "message": "Изображение удалено",
+                "images": ProductImageSerializer(
+                    product.images.all(), many=True, context={"request": request}
+                ).data,
+                "product": ProductSerializer(
+                    product, context={"request": request}
+                ).data,
+            },
+            status=status.HTTP_200_OK,
         )

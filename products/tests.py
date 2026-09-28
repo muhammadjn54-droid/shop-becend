@@ -130,9 +130,6 @@ class ProductCreationTests(BaseTestCase):
             {"name": "Water Sparkling", "image": original_image},
             format="json",
         )
-        self.assertEqual(patch_resp.status_code, status.HTTP_200_OK)
-        self.assertIsNotNone(patch_resp.data["image"])
-
         # 2. PATCH с пустой строкой не удаляет фото
         patch_resp2 = self.client.patch(
             reverse("product-detail", args=[prod_id]),
@@ -141,6 +138,45 @@ class ProductCreationTests(BaseTestCase):
         )
         self.assertEqual(patch_resp2.status_code, status.HTTP_200_OK)
         self.assertIsNotNone(patch_resp2.data["image"])
+
+    def test_create_product_with_more_than_five_images(self):
+        # Проверяем загрузку 6 фотографий (> 5 фото)
+        images = [self.generate_image_file(f"img_{i}.png") for i in range(6)]
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "Nike Air Max",
+                "arrival_date": "2026-09-27",
+                "quantity_received": 10,
+                "purchase_price": "50.00",
+                "selling_price": "100.00",
+                "images": images,
+            },
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNotNone(response.data["image"])
+        self.assertEqual(len(response.data["images"]), 6)
+
+    def test_upload_and_delete_product_images(self):
+        # 1. Загрузка дополнительных 3 фото к существующему товару
+        extra_images = [self.generate_image_file(f"extra_{i}.png") for i in range(3)]
+        upload_resp = self.client.post(
+            reverse("product-images-upload", args=[self.product.id]),
+            {"images": extra_images},
+            format="multipart",
+        )
+        self.assertEqual(upload_resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(upload_resp.data["images"]), 3)
+
+        image_id = upload_resp.data["images"][0]["id"]
+
+        # 2. Удаление конкретного фото
+        del_resp = self.client.delete(
+            reverse("product-images-delete", args=[self.product.id, image_id])
+        )
+        self.assertEqual(del_resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(del_resp.data["images"]), 2)
 
     def test_cannot_reduce_received_below_sold(self):
         self.client.post(

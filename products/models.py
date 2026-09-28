@@ -119,3 +119,31 @@ class Product(models.Model):
     def loss_per_item(self):
         diff = self.purchase_price - self.selling_price
         return diff if diff > 0 else Decimal("0.00")
+
+
+class ProductImage(models.Model):
+    """Дополнительные фотографии товара (поддержка множественных изображений)."""
+
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="images",
+        verbose_name="Товар",
+    )
+    image = models.ImageField(
+        validators=[
+            FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png", "webp"]),
+            validate_image_size,
+        ],
+        verbose_name="Фото товара",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        verbose_name = "Фото товара"
+        verbose_name_plural = "Фотографии товаров"
+
+    def __str__(self):
+        return f"Фото #{self.id} для {self.product.name}"
+

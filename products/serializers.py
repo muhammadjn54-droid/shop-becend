@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 from django.core.files.base import ContentFile
 from rest_framework import serializers
 
-from .models import Product
+from .models import Product, ProductImage
 
 
 class FlexibleImageField(serializers.ImageField):
@@ -122,8 +122,32 @@ class FlexibleImageField(serializers.ImageField):
         return super().to_internal_value(data)
 
 
+class ProductImageSerializer(serializers.ModelSerializer):
+    """Сериализатор отдельной фотографии товара."""
+
+    image = FlexibleImageField()
+
+    class Meta:
+        model = ProductImage
+        fields = ("id", "image", "created_at")
+
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        if instance.image:
+            request = self.context.get("request")
+            if request is not None:
+                ret["image"] = request.build_absolute_uri(instance.image.url)
+            else:
+                try:
+                    ret["image"] = instance.image.url
+                except Exception:
+                    pass
+        return ret
+
+
 class ProductSerializer(serializers.ModelSerializer):
     image = FlexibleImageField(required=False, allow_null=True)
+    images = ProductImageSerializer(many=True, read_only=True)
     remaining_quantity = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     sold_cost = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -137,6 +161,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "image",
+            "images",
             "arrival_date",
             "quantity_received",
             "quantity_sold",
@@ -153,6 +178,7 @@ class ProductSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
+            "images",
             "quantity_sold",
             "remaining_quantity",
             "revenue",
@@ -164,10 +190,80 @@ class ProductSerializer(serializers.ModelSerializer):
             "updated_at",
         )
 
+    def _save_multiple_images(self, product, images_list):
+        if not images_list:
+            return
+        field = FlexibleImageField()
+        field.bind(field_name="image", parent=self)
+        for img_item in images_list:
+            if not img_item:
+                continue
+            try:
+                processed_file = field.to_internal_value(img_item)
+                if processed_file:
+                    ProductImage.objects.create(product=product, image=processed_file)
+            except Exception:
+                pass
+
+        if not product.image and product.images.exists():
+            product.image = product.images.first().image
+            product.save(update_fields=["image"])
+
+    def create(self, validated_data):
+        product = super().create(validated_data)
+        request = self.context.get("request")
+        images_list = []
+        if request is not None:
+            if hasattr(request.data, "getlist"):
+                images_list = (
+                    request.data.getlist("images")
+                    or request.data.getlist("uploaded_images")
+                )
+            if not images_list and "images" in request.data:
+                val = request.data.get("images")
+                if isinstance(val, list):
+                    images_list = val
+                elif val:
+                    images_list = [val]
+            if not images_list and hasattr(request, "FILES"):
+                images_list = (
+                    request.FILES.getlist("images")
+                    or request.FILES.getlist("uploaded_images")
+                )
+
+        self._save_multiple_images(product, images_list)
+        return product
+
+    def update(self, instance, validated_data):
+        product = super().update(instance, validated_data)
+        request = self.context.get("request")
+        images_list = []
+        if request is not None:
+            if hasattr(request.data, "getlist"):
+                images_list = (
+                    request.data.getlist("images")
+                    or request.data.getlist("uploaded_images")
+                )
+            if not images_list and "images" in request.data:
+                val = request.data.get("images")
+                if isinstance(val, list):
+                    images_list = val
+                elif val:
+                    images_list = [val]
+            if not images_list and hasattr(request, "FILES"):
+                images_list = (
+                    request.FILES.getlist("images")
+                    or request.FILES.getlist("uploaded_images")
+                )
+
+        if images_list:
+            self._save_multiple_images(product, images_list)
+        return product
+
     def to_representation(self, instance):
         ret = super().to_representation(instance)
+        request = self.context.get("request")
         if instance.image:
-            request = self.context.get("request")
             if request is not None:
                 ret["image"] = request.build_absolute_uri(instance.image.url)
             else:
@@ -175,6 +271,17 @@ class ProductSerializer(serializers.ModelSerializer):
                     ret["image"] = instance.image.url
                 except Exception:
                     pass
+
+        images_qs = instance.images.all()
+        if images_qs.exists():
+            ret["images"] = ProductImageSerializer(
+                images_qs, many=True, context=self.context
+            ).data
+        elif ret.get("image"):
+            ret["images"] = [{"id": 0, "image": ret["image"]}]
+        else:
+            ret["images"] = []
+
         return ret
 
     def validate_quantity_received(self, value):
