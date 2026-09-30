@@ -148,6 +148,14 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class ProductSerializer(serializers.ModelSerializer):
     image = FlexibleImageField(required=False, allow_null=True)
     images = ProductImageSerializer(many=True, read_only=True)
+    barcode = serializers.CharField(
+        max_length=100,
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+        trim_whitespace=True,
+        help_text="Штрихкод товара (строка). Уникален в пределах пользователя.",
+    )
     remaining_quantity = serializers.IntegerField(read_only=True)
     revenue = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     sold_cost = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -160,6 +168,7 @@ class ProductSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "barcode",
             "image",
             "images",
             "arrival_date",
@@ -283,6 +292,35 @@ class ProductSerializer(serializers.ModelSerializer):
             ret["images"] = []
 
         return ret
+
+    def _resolve_owner(self):
+        """Определяет владельца товара: request.user при create, instance.user при update."""
+        if self.instance is not None and getattr(self.instance, "user_id", None):
+            return self.instance.user
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user is not None and not getattr(user, "is_authenticated", False):
+            return None
+        return user
+
+    def validate_barcode(self, value):
+        barcode = (value or "").strip()
+
+        if not barcode:
+            return None
+
+        user = self._resolve_owner()
+        if user is None:
+            return barcode
+
+        duplicates = Product.objects.filter(user=user, barcode=barcode)
+        if self.instance is not None and self.instance.pk:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+
+        if duplicates.exists():
+            raise serializers.ValidationError("Товар с таким штрихкодом уже существует")
+
+        return barcode
 
     def validate_quantity_received(self, value):
         if value < 0:

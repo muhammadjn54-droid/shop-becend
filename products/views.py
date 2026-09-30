@@ -23,15 +23,16 @@ from sales.serializers import SaleSerializer, SaleReturnSerializer
 
 class ProductListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductSerializer
-    search_fields = ["name"]
+    search_fields = ["name", "barcode"]
     ordering_fields = [
         "name",
+        "barcode",
         "arrival_date",
         "purchase_price",
         "selling_price",
         "created_at",
     ]
-    filterset_fields = ["arrival_date", "name"]
+    filterset_fields = ["arrival_date", "name", "barcode"]
 
     def get_queryset(self):
         return Product.objects.filter(user=self.request.user).prefetch_related(

@@ -322,3 +322,229 @@ class ProductOwnershipTests(BaseTestCase):
         names = [item["name"] for item in response.data["results"]]
         self.assertIn("Coca-Cola", names)
         self.assertNotIn("Other product", names)
+
+
+class ProductBarcodeTests(BaseTestCase):
+    BARCODE = "CH0000034936"
+
+    def create_with_barcode(self, name="Coca-Cola 1L", barcode=None):
+        return self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": name,
+                "barcode": self.BARCODE if barcode is None else barcode,
+                "arrival_date": "2026-09-30",
+                "quantity_received": 20,
+                "purchase_price": "7.00",
+                "selling_price": "10.00",
+            },
+            format="json",
+        )
+
+    def test_create_product_with_barcode(self):
+        response = self.create_with_barcode()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["barcode"], self.BARCODE)
+
+    def test_barcode_is_always_string_even_when_number_sent(self):
+        response = self.create_with_barcode(barcode=5449000000996)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["barcode"], "5449000000996")
+        self.assertIsInstance(response.data["barcode"], str)
+
+    def test_barcode_is_stripped(self):
+        response = self.create_with_barcode(barcode="  CH0000034936  ")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["barcode"], self.BARCODE)
+
+    def test_empty_barcode_saved_as_null(self):
+        response = self.create_with_barcode(barcode="   ")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["barcode"])
+
+    def test_omitted_barcode_is_null(self):
+        response = self.client.post(
+            reverse("product-list-create"),
+            {
+                "name": "No barcode",
+                "arrival_date": "2026-09-30",
+                "quantity_received": 5,
+                "purchase_price": "1.00",
+                "selling_price": "2.00",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(response.data["barcode"])
+
+    def test_duplicate_barcode_for_same_user_is_rejected(self):
+        self.create_with_barcode()
+        response = self.create_with_barcode(name="Another drink")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["barcode"], ["Товар с таким штрихкодом уже существует"]
+        )
+
+    def test_patch_product_with_same_own_barcode_is_allowed(self):
+        self.create_with_barcode()
+        created = Product.objects.get(user=self.user, barcode=self.BARCODE)
+        response = self.client.patch(
+            reverse("product-detail", args=[created.id]),
+            {"name": "Coca-Cola 1.5L", "barcode": self.BARCODE},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["barcode"], self.BARCODE)
+        self.assertEqual(response.data["name"], "Coca-Cola 1.5L")
+
+    def test_patch_product_with_barcode_of_another_product_is_rejected(self):
+        self.create_with_barcode()
+        other = Product.objects.create(
+            user=self.user,
+            name="Second product",
+            arrival_date="2026-09-30",
+            quantity_received=1,
+            purchase_price=Decimal("1.00"),
+            selling_price=Decimal("2.00"),
+        )
+        response = self.client.patch(
+            reverse("product-detail", args=[other.id]),
+            {"barcode": self.BARCODE},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data["barcode"], ["Товар с таким штрихкодом уже существует"]
+        )
+
+    def test_patch_can_clear_barcode(self):
+        self.create_with_barcode()
+        created = Product.objects.get(user=self.user, barcode=self.BARCODE)
+        response = self.client.patch(
+            reverse("product-detail", args=[created.id]),
+            {"barcode": ""},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["barcode"])
+
+    def test_search_by_name_finds_product(self):
+        self.create_with_barcode()
+        response = self.client.get(
+            reverse("product-list-create"), {"search": "Coca"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [item["name"] for item in response.data["results"]]
+        self.assertIn("Coca-Cola 1L", names)
+
+    def test_search_by_barcode_finds_same_product(self):
+        self.create_with_barcode()
+        response = self.client.get(
+            reverse("product-list-create"), {"search": self.BARCODE}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["name"], "Coca-Cola 1L")
+        self.assertEqual(response.data["results"][0]["barcode"], self.BARCODE)
+
+    def test_search_by_partial_barcode_finds_product(self):
+        self.create_with_barcode()
+        response = self.client.get(reverse("product-list-create"), {"search": "34936"})
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["name"], "Coca-Cola 1L")
+
+    def test_exact_barcode_filter(self):
+        self.create_with_barcode()
+        response = self.client.get(
+            reverse("product-list-create"), {"barcode": self.BARCODE}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["name"], "Coca-Cola 1L")
+
+    def test_exact_barcode_filter_does_not_partial_match(self):
+        self.create_with_barcode()
+        response = self.client.get(reverse("product-list-create"), {"barcode": "34936"})
+        self.assertEqual(response.data["results"], [])
+
+    def test_ordering_by_barcode(self):
+        self.create_with_barcode(name="AAA", barcode="111")
+        self.create_with_barcode(name="ZZZ", barcode="999")
+        response = self.client.get(
+            reverse("product-list-create"), {"ordering": "barcode"}
+        )
+        barcodes = [item["barcode"] for item in response.data["results"] if item["barcode"]]
+        self.assertEqual(barcodes, ["111", "999"])
+
+    def test_multi_user_same_barcode_is_allowed(self):
+        self.create_with_barcode()
+        self.client.force_authenticate(user=self.other_user)
+        response = self.create_with_barcode()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["barcode"], self.BARCODE)
+
+    def test_multi_user_products_are_isolated_on_search(self):
+        self.create_with_barcode()
+        self.client.force_authenticate(user=self.other_user)
+        self.create_with_barcode()
+
+        # каждый пользователь видит только свой товар
+        response = self.client.get(
+            reverse("product-list-create"), {"barcode": self.BARCODE}
+        )
+        self.assertEqual(len(response.data["results"]), 1)
+        mine = response.data["results"][0]
+        self.assertNotEqual(mine["id"], None)
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(
+            reverse("product-list-create"), {"barcode": self.BARCODE}
+        )
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertNotEqual(response.data["results"][0]["id"], mine["id"])
+
+    def test_multi_user_cannot_see_other_user_product_detail(self):
+        self.create_with_barcode()
+        created = Product.objects.get(user=self.user, barcode=self.BARCODE)
+        self.client.force_authenticate(user=self.other_user)
+        response = self.client.get(reverse("product-detail", args=[created.id]))
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_existing_products_without_barcode_still_work(self):
+        self.assertIsNone(self.product.barcode)
+        response = self.client.get(reverse("product-list-create"))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [item["id"] for item in response.data["results"]]
+        self.assertIn(self.product.id, ids)
+
+    def test_multiple_products_without_barcode_allowed(self):
+        for i in range(3):
+            resp = self.create_with_barcode(name=f"Product {i}", barcode="")
+            self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+            self.assertIsNone(resp.data["barcode"])
+
+    def test_barcode_survives_sell_and_add_stock(self):
+        self.create_with_barcode()
+        created = Product.objects.get(user=self.user, barcode=self.BARCODE)
+
+        sell = self.client.post(
+            reverse("product-sell", args=[created.id]), {"quantity": 2}, format="json"
+        )
+        self.assertEqual(sell.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(sell.data["product"]["barcode"], self.BARCODE)
+
+        stock = self.client.post(
+            reverse("product-add-stock", args=[created.id]),
+            {"quantity": 5},
+            format="json",
+        )
+        self.assertEqual(stock.status_code, status.HTTP_200_OK)
+        self.assertEqual(stock.data["product"]["barcode"], self.BARCODE)
+
+        ret = self.client.post(
+            reverse("product-return", args=[created.id]),
+            {"quantity": 1},
+            format="json",
+        )
+        self.assertEqual(ret.status_code, status.HTTP_200_OK)
+        self.assertEqual(ret.data["product"]["barcode"], self.BARCODE)

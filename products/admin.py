@@ -14,6 +14,7 @@ class ProductAdmin(admin.ModelAdmin):
     list_display = (
         "id",
         "name",
+        "barcode",
         "user",
         "quantity_received",
         "quantity_sold",
@@ -21,7 +22,7 @@ class ProductAdmin(admin.ModelAdmin):
         "purchase_price",
         "selling_price",
     )
-    search_fields = ("name",)
+    search_fields = ("name", "barcode")
     list_filter = ("arrival_date",)
 
 

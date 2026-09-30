@@ -24,6 +24,13 @@ class Product(models.Model):
         related_name="products",
     )
     name = models.CharField(max_length=255, verbose_name="Название товара")
+    barcode = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        db_index=True,
+        verbose_name="Штрихкод",
+    )
     image = models.ImageField(
         blank=True,
         null=True,
@@ -51,6 +58,13 @@ class Product(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "barcode"],
+                name="unique_barcode_per_user",
+                condition=models.Q(barcode__isnull=False) & ~models.Q(barcode=""),
+            ),
+        ]
 
     def __str__(self):
         return self.name
