@@ -245,9 +245,14 @@ REST_FRAMEWORK = {
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=6),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": True,
+    # Two browser tabs share localStorage but not JS memory, so they can
+    # refresh with the same token at the same time. Blacklisting on rotation
+    # made the loser of that race get 401 and wipe the shared tokens, logging
+    # the user out everywhere. LogoutView still blacklists explicitly.
+    "BLACKLIST_AFTER_ROTATION": False,
+    "UPDATE_LAST_LOGIN": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
 
