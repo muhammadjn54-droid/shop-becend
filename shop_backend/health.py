@@ -30,6 +30,9 @@ def health(request):
         "is_postgres": is_postgres,
         "database_url_set": bool(os.environ.get("DATABASE_URL")),
         "is_vercel": bool(getattr(settings, "IS_VERCEL", False)),
+        "is_render": bool(getattr(settings, "IS_RENDER", False)),
+        # Where SQLite and uploaded media actually live.
+        "data_dir": os.environ.get("DATA_DIR") or None,
         # Different value on every serverless instance, so two parallel
         # requests returning different ids proves requests are not
         # hitting the same process.

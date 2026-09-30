@@ -1,86 +1,108 @@
-# Production deployment (Vercel)
+# Deployment
 
-Backend: Django + DRF, deployed to `https://shop-becend.vercel.app`.
+Django + DRF backend for the shop inventory app.
 
-## Why environment variables are required
+- Backend repository: `shop-becend` (this one)
+- Frontend repository: `shop-of-` (React, talks to the backend over `/api/`)
+
+## Why the database matters
+
+### Vercel (serverless) — SQLite cannot work
 
 Vercel runs each request in a **separate serverless instance** with its own
-writable `/tmp`. Anything stored in `/tmp` is not shared between instances and
-is deleted when an instance is recycled.
-
-Measured on production: one freshly registered user, one valid token, 10
-parallel requests:
+`/tmp`. A SQLite file in `/tmp` is therefore not shared and is deleted when
+an instance recycles. Measured on production: one freshly registered user,
+one valid token, 10 parallel requests:
 
 ```
-8x  HTTP 401  (user not found on this instance)
-2x  HTTP 200  (user found)
+8x HTTP 401 (user not found on this instance)
+2x HTTP 200 (user found)
 ```
 
-Without a shared database the app therefore loses accounts, products and sales,
-and returns 401/404/500 at random. `shop_backend/settings.py` prints a
-`[CRITICAL]` warning on boot while this is unconfigured.
+So accounts, products and sales disappear within minutes, and the same
+product returns 200 or 404 depending on which instance answers. **On Vercel
+you must set `DATABASE_URL` to a real PostgreSQL.** `settings.py` prints
+`[CRITICAL]` at boot while it is missing.
 
-## 1. Create a PostgreSQL database
+### Render — SQLite is fine
 
-Any hosted Postgres works. Free options: Vercel Postgres, Neon, Supabase.
+Render runs **one long-running process**, not a fresh instance per request,
+so SQLite behaves normally and no external database is required. Its
+filesystem is still wiped on every redeploy, so either attach a Persistent
+Disk or use PostgreSQL.
 
-Copy the **pooled** connection string, e.g.
+## Check what a deployment is actually using
 
 ```
-postgresql://USER:PASSWORD@HOST:5432/DBNAME
+GET /api/health/
 ```
 
-## 2. Add the environment variable
+```json
+{
+  "status": "ok",
+  "db_engine": "django.db.backends.postgresql",
+  "is_postgres": true,
+  "database_url_set": true,
+  "is_vercel": false,
+  "is_render": true,
+  "data_dir": null,
+  "db_reachable": true,
+  "instance": "3f9a1c22"
+}
+```
 
-Vercel dashboard → *shop-becend* → **Settings → Environment Variables** →
-add for **Production** (and **Preview**):
+It never prints credentials, hosts or passwords. `instance` changes on every
+serverless instance, so two parallel requests returning different values
+proves requests are landing on different processes (the Vercel problem).
 
-| Name          | Value                        |
-| ------------- | ---------------------------- |
-| `DATABASE_URL` | the pooled Postgres URL     |
+## Deploying to Render
 
-Set it for **both** Production and Preview, otherwise preview deployments keep
-writing to `/tmp`.
+`render.yaml` is a Blueprint, so nothing needs typing into a dashboard:
 
-## 3. Run the migrations once
+1. Render → **New → Blueprint** → select this repository → apply.
+2. It sets the build command, the start command, `SECRET_KEY`, and
+   `healthCheckPath: /api/health/`.
+3. Optional: uncomment the `disk` block and `DATA_DIR` to keep data across
+   redeploys, or set `DATABASE_URL` for PostgreSQL.
 
-Vercel does not run migrations on deploy, so do it manually to avoid a
-build-time race between instances:
+If you configure the service by hand instead, the two commands are:
+
+```
+build:  pip install -r requirements.txt && python manage.py collectstatic --noinput
+start:  sh -c "python manage.py migrate --noinput && gunicorn shop_backend.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120"
+```
+
+`migrate` must run before gunicorn: a brand new database has no tables and
+every request would fail with `no such table: accounts_customuser`.
+
+> A start command of `12` (a Python version typed into the wrong field)
+> fails with `bash: line 1: 12: command not found`. The commands above live
+> in the repository precisely so this cannot happen.
+
+## Deploying to Vercel
+
+`vercel.json` points at `shop_backend/wsgi.py`. Set `DATABASE_URL` to a
+PostgreSQL connection string, otherwise the app runs on per-instance
+`/tmp` SQLite and loses all data.
+
+## Pointing the frontend at a deployment
+
+In the frontend repository set `VITE_API_URL` (no trailing slash, **no
+`/api` suffix** — the app appends `/api/...` itself):
+
+```
+VITE_API_URL=https://your-backend.onrender.com
+```
+
+It defaults to `https://shop-becend.vercel.app`, so nothing is required
+while using the Vercel deployment.
+
+## Tests
 
 ```bash
-npx vercel env pull .env.production.local --environment=production
-# then, with DATABASE_URL exported from that file:
-python manage.py migrate
+python manage.py test          # 59 tests
 ```
 
-## 4. Verify
-
-```bash
-# schema is live
-curl https://shop-becend.vercel.app/swagger/?format=openapi | grep barcode
-
-# a user now survives parallel requests
-# (before the fix, ~8/10 returned 401)
-```
-
-Set the same variable locally in `.env` to develop against the same database.
-
-## Product images (also ephemeral)
-
-Without Cloudinary, `MEDIA_ROOT` is `/tmp/media`, so uploaded images disappear
-when an instance recycles. The code already supports Cloudinary — it is
-enabled automatically when all three variables are present:
-
-| Name                    | Value            |
-| ----------------------- | ---------------- |
-| `CLOUDINARY_CLOUD_NAME` | from Cloudinary  |
-| `CLOUDINARY_API_KEY`    | from Cloudinary  |
-| `CLOUDINARY_API_SECRET` | from Cloudinary  |
-
-Once they are set, new uploads are stored in Cloudinary and served from a CDN.
-Images uploaded before this change are already lost and cannot be recovered.
-
-## Related commits
-
-- `5a075c6` — fix `HTTP 500 database is locked` under concurrent writes
-- `4c96cdf` — fail loudly instead of silently falling back to `/tmp` SQLite
+Covers barcode uniqueness and per-user isolation, concurrent sales
+(no `database is locked`, no lost updates), the refresh-token race that
+used to log users out, email uniqueness, and the `/api/health/` contract.
