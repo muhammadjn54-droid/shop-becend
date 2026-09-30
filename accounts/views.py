@@ -6,7 +6,12 @@ from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView
 from drf_yasg.utils import swagger_auto_schema
 
-from .serializers import RegisterSerializer, UserSerializer, LogoutSerializer
+from .serializers import (
+    LoginSerializer,
+    RegisterSerializer,
+    UserSerializer,
+    LogoutSerializer,
+)
 
 User = get_user_model()
 
@@ -46,12 +51,14 @@ class LoginView(TokenObtainPairView):
     """
     POST /api/auth/login/
 
-    Вход пользователя. Принимает username и password,
-    возвращает access и refresh токены.
-    Используется стандартный TokenObtainPairView из simplejwt.
+    Вход пользователя по username ИЛИ по email, возвращает access и
+    refresh токены. Если в поле username передан email, он
+    преобразуется в username.
     """
 
     permission_classes = [permissions.AllowAny]
+    serializer_class = LoginSerializer
+
 
 
 class MeView(generics.RetrieveAPIView):

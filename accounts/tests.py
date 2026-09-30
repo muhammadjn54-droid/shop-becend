@@ -97,3 +97,89 @@ class RefreshTokenRaceTests(APITestCase):
         self.assertGreaterEqual(
             settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"], timedelta(days=7)
         )
+
+
+class EmailUniquenessTests(APITestCase):
+    """
+    Email must be unique: otherwise anyone could register on someone
+    else's address and reach their account.
+    """
+
+    def register(self, username, email):
+        return self.client.post(
+            reverse("auth-register"),
+            {
+                "username": username,
+                "email": email,
+                "password": "Str0ngPass!123",
+                "password2": "Str0ngPass!123",
+            },
+            format="json",
+        )
+
+    def test_duplicate_email_is_rejected_with_400(self):
+        first = self.register("owner", "owner@example.com")
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+
+        second = self.register("intruder", "owner@example.com")
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", second.data)
+
+    def test_duplicate_email_is_rejected_case_insensitively(self):
+        self.register("owner2", "Owner2@Example.com")
+        again = self.register("intruder2", "owner2@example.com")
+        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_empty_email_is_allowed_for_many_users(self):
+        a = self.register("noemail1", "")
+        b = self.register("noemail2", "")
+        self.assertEqual(a.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(b.status_code, status.HTTP_201_CREATED)
+
+    def test_email_is_stored_normalised(self):
+        self.register("norm", "  MiXeD@Example.COM ")
+        user = User.objects.get(username="norm")
+        self.assertEqual(user.email, "mixed@example.com")
+
+
+class LoginWithEmailTests(APITestCase):
+    def setUp(self):
+        User.objects.create_user(
+            username="shopowner",
+            email="shopowner@example.com",
+            password="Str0ngPass!123",
+        )
+
+    def test_login_with_email(self):
+        response = self.client.post(
+            reverse("auth-login"),
+            {"username": "shopowner@example.com", "password": "Str0ngPass!123"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+    def test_login_with_username_still_works(self):
+        response = self.client.post(
+            reverse("auth-login"),
+            {"username": "shopowner", "password": "Str0ngPass!123"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+
+    def test_wrong_password_gives_same_error_as_unknown_user(self):
+        wrong_pw = self.client.post(
+            reverse("auth-login"),
+            {"username": "shopowner", "password": "WrongPass!123"},
+            format="json",
+        )
+        unknown = self.client.post(
+            reverse("auth-login"),
+            {"username": "ghost", "password": "WrongPass!123"},
+            format="json",
+        )
+        self.assertEqual(wrong_pw.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(unknown.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(wrong_pw.data["detail"], unknown.data["detail"])
