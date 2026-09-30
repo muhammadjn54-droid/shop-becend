@@ -7,6 +7,8 @@ from rest_framework import permissions
 from drf_yasg import openapi
 from drf_yasg.views import get_schema_view
 
+from .health import health
+
 schema_view = get_schema_view(
     openapi.Info(
         title="Shop Inventory API",
@@ -29,6 +31,8 @@ urlpatterns = [
         name="schema-swagger-ui-root",
     ),
     path("admin/", admin.site.urls),
+    # health / database diagnostics
+    path("api/health/", health, name="health"),
     # auth
     path("api/auth/", include("accounts.urls")),
     # products + sales + statistics + dashboard

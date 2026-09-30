@@ -13,6 +13,8 @@ using the exact pragmas taken from settings.DATABASES.
 
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
@@ -57,22 +59,30 @@ class DatabaseUrlGuardTests(SimpleTestCase):
     """DATABASE_URL must never silently degrade to ephemeral SQLite."""
 
     def test_database_url_without_driver_raises(self):
-        import importlib
-        import sys
-
-        mod = importlib.import_module("shop_backend.settings")
-        try:
-            # A None entry in sys.modules makes `import dj_database_url` raise.
-            with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@h:5432/d"}):
-                with mock.patch.dict(sys.modules, {"dj_database_url": None}):
-                    with self.assertRaises(RuntimeError):
-                        importlib.reload(mod)
-        finally:
-            importlib.reload(mod)
-
-        self.assertEqual(
-            settings.DATABASES["default"]["ENGINE"], "django.db.backends.sqlite3"
+        # Run in a subprocess: reloading the settings module in-process
+        # would mutate global Django state and make other tests flaky.
+        script = (
+            "import sys\n"
+            "sys.modules['dj_database_url'] = None\n"
+            "import django\n"
+            "django.setup()\n"
+            "print('NO_ERROR')\n"
         )
+        env = dict(os.environ)
+        env["DATABASE_URL"] = "postgresql://u:p@h:5432/d"
+        env["DJANGO_SETTINGS_MODULE"] = "shop_backend.settings"
+        env["PYTHONPATH"] = str(settings.BASE_DIR)
+
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(settings.BASE_DIR),
+            timeout=120,
+        )
+        self.assertNotIn("NO_ERROR", result.stdout)
+        self.assertIn("dj-database-url", result.stderr)
 
 
 class SQLiteConcurrentWriteTests(SimpleTestCase):
