@@ -15,6 +15,7 @@ import os
 import sqlite3
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from django.conf import settings
 from django.test import SimpleTestCase
@@ -50,6 +51,28 @@ class SQLiteConcurrencySettingsTests(SimpleTestCase):
         name = settings.DATABASES["default"]["NAME"]
         if getattr(settings, "IS_VERCEL", False):
             self.assertTrue(str(name).startswith("/tmp"), name)
+
+
+class DatabaseUrlGuardTests(SimpleTestCase):
+    """DATABASE_URL must never silently degrade to ephemeral SQLite."""
+
+    def test_database_url_without_driver_raises(self):
+        import importlib
+        import sys
+
+        mod = importlib.import_module("shop_backend.settings")
+        try:
+            # A None entry in sys.modules makes `import dj_database_url` raise.
+            with mock.patch.dict(os.environ, {"DATABASE_URL": "postgresql://u:p@h:5432/d"}):
+                with mock.patch.dict(sys.modules, {"dj_database_url": None}):
+                    with self.assertRaises(RuntimeError):
+                        importlib.reload(mod)
+        finally:
+            importlib.reload(mod)
+
+        self.assertEqual(
+            settings.DATABASES["default"]["ENGINE"], "django.db.backends.sqlite3"
+        )
 
 
 class SQLiteConcurrentWriteTests(SimpleTestCase):

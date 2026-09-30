@@ -123,7 +123,14 @@ TEMPLATES = [
 WSGI_APPLICATION = "shop_backend.wsgi.application"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if DATABASE_URL and dj_database_url:
+if DATABASE_URL:
+    # Never fall back to SQLite when DATABASE_URL is set: silently degrading
+    # to a per-instance /tmp database loses all data, so fail loudly instead.
+    if dj_database_url is None:
+        raise RuntimeError(
+            "DATABASE_URL is set but dj-database-url is not installed. "
+            "Add 'dj-database-url' to requirements.txt."
+        )
     DATABASES = {
         "default": dj_database_url.parse(
             DATABASE_URL,
@@ -153,6 +160,8 @@ else:
 
 # Ephemeral storage warning: on Vercel, when DATABASE_URL is not configured the
 # app falls back to SQLite inside /tmp, which is per-instance and gets wiped.
+# Proven on production: parallel requests are served by different instances,
+# so a just-created user returns 401/404 on most of them.
 if IS_VERCEL and not DATABASE_URL:
     import sys
 
