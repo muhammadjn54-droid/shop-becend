@@ -132,12 +132,35 @@ if DATABASE_URL and dj_database_url:
         )
     }
 else:
+    # SQLite fallback. WAL + busy_timeout + IMMEDIATE transactions keep
+    # concurrent writes (sell / add-stock / return) from raising
+    # "OperationalError: database is locked" (HTTP 500) and losing updates.
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": "/tmp/db.sqlite3" if IS_VERCEL else BASE_DIR / "db.sqlite3",
+            "OPTIONS": {
+                "timeout": 30,
+                "transaction_mode": "IMMEDIATE",
+                "init_command": (
+                    "PRAGMA journal_mode=WAL;"
+                    "PRAGMA synchronous=NORMAL;"
+                    "PRAGMA busy_timeout=30000;"
+                ),
+            },
         }
     }
+
+# Ephemeral storage warning: on Vercel, when DATABASE_URL is not configured the
+# app falls back to SQLite inside /tmp, which is per-instance and gets wiped.
+if IS_VERCEL and not DATABASE_URL:
+    import sys
+
+    print(
+        "\n[CRITICAL] DATABASE_URL is not set on Vercel: falling back to "
+        "ephemeral SQLite in /tmp. Data is lost when instances restart.\n",
+        file=sys.stderr,
+    )
 
 AUTH_USER_MODEL = "accounts.CustomUser"
 
