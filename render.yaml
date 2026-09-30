@@ -1,0 +1,46 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# Deploy with: New → Blueprint → point at this repository.
+# The start command lives here, so it can never be a stray value like "12".
+
+services:
+  - type: web
+    name: shop-backend
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: >-
+      gunicorn shop_backend.wsgi:application
+      --bind 0.0.0.0:$PORT
+      --workers ${WEB_CONCURRENCY:-1}
+      --threads ${WEB_THREADS:-4}
+      --timeout 120
+    healthCheckPath: /api/health/
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "false"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: WEB_THREADS
+        value: "4"
+      # Replace the value with your own Postgres connection string, then
+      # uncomment. With DATABASE_URL set, data is shared and permanent.
+      # - key: DATABASE_URL
+      #   value: postgresql://USER:PASSWORD@HOST:5432/DBNAME
+      #
+      # Without DATABASE_URL, SQLite is used instead. Render runs a single
+      # long-running process so this works, but the filesystem is wiped on
+      # every redeploy. To keep data, attach a Persistent Disk and set
+      # DATA_DIR=/var/data (uncomment the disk block below).
+
+  # Uncomment together with DATA_DIR above to keep SQLite and uploaded
+  # images across restarts. Disks are a paid add-on; the free plan has none.
+  # - type: disk
+  #   name: shop-data
+  #   mountPath: /var/data
+  #   sizeGB: 1

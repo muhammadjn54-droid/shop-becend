@@ -13,6 +13,11 @@ except ImportError:
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 IS_VERCEL = bool(os.environ.get("VERCEL"))
+IS_RENDER = bool(os.environ.get("RENDER"))
+# On Render the filesystem is ephemeral unless a Persistent Disk is mounted at
+# /var/data. Pointing DATA_DIR at the disk keeps SQLite and uploaded images
+# across restarts and redeploys.
+DATA_DIR = os.environ.get("DATA_DIR") or ""
 
 
 def env_bool(name, default=False):
@@ -32,7 +37,7 @@ SECRET_KEY = os.environ.get(
     "django-insecure-local-development-only-change-me",
 )
 
-DEBUG = env_bool("DEBUG", default=not IS_VERCEL)
+DEBUG = env_bool("DEBUG", default=not (IS_VERCEL or IS_RENDER))
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
@@ -139,13 +144,24 @@ if DATABASE_URL:
         )
     }
 else:
-    # SQLite fallback. WAL + busy_timeout + IMMEDIATE transactions keep
-    # concurrent writes (sell / add-stock / return) from raising
-    # "OperationalError: database is locked" (HTTP 500) and losing updates.
+    # SQLite fallback.
+    #
+    # On Vercel this file lands in /tmp, which is per-serverless-instance and
+    # therefore useless for real data - see the warning below.
+    # On Render there is a single long-running process, so SQLite works; set
+    # DATA_DIR=/var/data and attach a Persistent Disk to keep it across
+    # restarts and redeploys.
+    if IS_VERCEL:
+        SQLITE_PATH = "/tmp/db.sqlite3"
+    elif DATA_DIR:
+        SQLITE_PATH = str(Path(DATA_DIR) / "db.sqlite3")
+    else:
+        SQLITE_PATH = str(BASE_DIR / "db.sqlite3")
+
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": "/tmp/db.sqlite3" if IS_VERCEL else BASE_DIR / "db.sqlite3",
+            "NAME": SQLITE_PATH,
             "OPTIONS": {
                 "timeout": 30,
                 "transaction_mode": "IMMEDIATE",
@@ -171,6 +187,17 @@ if IS_VERCEL and not DATABASE_URL:
         file=sys.stderr,
     )
 
+if IS_RENDER and not DATABASE_URL and not DATA_DIR:
+    import sys as _sys
+
+    print(
+        "\n[WARNING] Neither DATABASE_URL nor DATA_DIR is set on Render.\n"
+        "SQLite will be written to the code directory, so all data is lost\n"
+        "on every restart and redeploy. Attach a Persistent Disk and set\n"
+        "DATA_DIR=/var/data, or set DATABASE_URL.\n",
+        file=_sys.stderr,
+    )
+
 AUTH_USER_MODEL = "accounts.CustomUser"
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -189,7 +216,12 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 MEDIA_URL = "/media/"
-MEDIA_ROOT = Path("/tmp/media") if IS_VERCEL else BASE_DIR / "media"
+if IS_VERCEL:
+    MEDIA_ROOT = Path("/tmp/media")
+elif DATA_DIR:
+    MEDIA_ROOT = Path(DATA_DIR) / "media"
+else:
+    MEDIA_ROOT = BASE_DIR / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Do not use ManifestStaticFilesStorage here. Swagger/Redoc may be rendered
