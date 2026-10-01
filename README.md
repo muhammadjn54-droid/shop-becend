@@ -67,7 +67,7 @@ DEBUG=False
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME
 ALLOWED_HOSTS=shop-becend.vercel.app,.vercel.app
 CORS_ALLOWED_ORIGINS=https://YOUR-FRONTEND.vercel.app
-CSRF_TRUSTED_ORIGINS=https://shop-becend.vercel.app,https://YOUR-FRONTEND.vercel.app
+CSRF_TRUSTED_ORIGINS=https://shop-becend.vercel.app/
 CLOUDINARY_CLOUD_NAME=...
 CLOUDINARY_API_KEY=...
 CLOUDINARY_API_SECRET=...
@@ -112,3 +112,4 @@ Authorization: Bearer <access_token>
 ```
 
 Every product and sale query is scoped to `request.user`.
+
