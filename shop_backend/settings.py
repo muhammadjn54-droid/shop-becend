@@ -41,13 +41,21 @@ DEBUG = env_bool("DEBUG", default=not (IS_VERCEL or IS_RENDER))
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
-    "*,localhost,127.0.0.1,.vercel.app",
+    "*,localhost,127.0.0.1,.vercel.app,.onrender.com",
 )
+render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if render_host and render_host not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append(render_host)
 
 CSRF_TRUSTED_ORIGINS = env_list(
     "CSRF_TRUSTED_ORIGINS",
-    "http://localhost,http://127.0.0.1,http://localhost:5173,http://localhost:5174,https://*.vercel.app",
+    "http://localhost,http://127.0.0.1,http://localhost:5173,http://localhost:5174,https://*.vercel.app,https://*.onrender.com",
 )
+render_url = os.environ.get("RENDER_EXTERNAL_URL")
+if render_url and render_url not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(render_url)
+
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
@@ -104,7 +112,12 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+cors_origins = env_list("CORS_ALLOWED_ORIGINS", "")
+if cors_origins:
+    CORS_ALLOWED_ORIGINS = cors_origins
+    CORS_ALLOW_ALL_ORIGINS = False
+else:
+    CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "shop_backend.urls"
@@ -155,6 +168,7 @@ else:
         SQLITE_PATH = "/tmp/db.sqlite3"
     elif DATA_DIR:
         SQLITE_PATH = str(Path(DATA_DIR) / "db.sqlite3")
+        Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
     else:
         SQLITE_PATH = str(BASE_DIR / "db.sqlite3")
 
