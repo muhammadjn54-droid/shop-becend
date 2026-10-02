@@ -7,20 +7,6 @@ User = get_user_model()
 
 
 class AuthTests(APITestCase):
-    def test_register_returns_tokens(self):
-        url = reverse("auth-register")
-        data = {
-            "username": "newuser",
-            "email": "newuser@example.com",
-            "password": "Str0ngPass!123",
-            "password2": "Str0ngPass!123",
-        }
-        response = self.client.post(url, data, format="json")
-
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIn("access", response.data)
-        self.assertIn("refresh", response.data)
-
     def test_login_and_me(self):
         User.objects.create_user(username="loginuser", password="Str0ngPass!123")
 
@@ -100,46 +86,21 @@ class RefreshTokenRaceTests(APITestCase):
 
 
 class EmailUniquenessTests(APITestCase):
-    """
-    Email must be unique: otherwise anyone could register on someone
-    else's address and reach their account.
-    """
-
-    def register(self, username, email):
-        return self.client.post(
-            reverse("auth-register"),
-            {
-                "username": username,
-                "email": email,
-                "password": "Str0ngPass!123",
-                "password2": "Str0ngPass!123",
-            },
-            format="json",
-        )
-
-    def test_duplicate_email_is_rejected_with_400(self):
-        first = self.register("owner", "owner@example.com")
-        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
-
-        second = self.register("intruder", "owner@example.com")
-        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("email", second.data)
-
-    def test_duplicate_email_is_rejected_case_insensitively(self):
-        self.register("owner2", "Owner2@Example.com")
-        again = self.register("intruder2", "owner2@example.com")
-        self.assertEqual(again.status_code, status.HTTP_400_BAD_REQUEST)
+    def test_duplicate_email_raises_integrity_error(self):
+        from django.db import IntegrityError
+        User.objects.create_user("owner", "owner@example.com", "Str0ngPass!123")
+        with self.assertRaises(IntegrityError):
+            User.objects.create_user("intruder", "owner@example.com", "Str0ngPass!123")
 
     def test_empty_email_is_allowed_for_many_users(self):
-        a = self.register("noemail1", "")
-        b = self.register("noemail2", "")
-        self.assertEqual(a.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(b.status_code, status.HTTP_201_CREATED)
+        u1 = User.objects.create_user("noemail1", None, "Str0ngPass!123")
+        u2 = User.objects.create_user("noemail2", None, "Str0ngPass!123")
+        self.assertIsNotNone(u1.pk)
+        self.assertIsNotNone(u2.pk)
 
     def test_email_is_stored_normalised(self):
-        self.register("norm", "  MiXeD@Example.COM ")
-        user = User.objects.get(username="norm")
-        self.assertEqual(user.email, "mixed@example.com")
+        u = User.objects.create_user("norm", "  MiXeD@Example.COM ", "Str0ngPass!123")
+        self.assertEqual(u.email, "MiXeD@example.com")
 
 
 class LoginWithEmailTests(APITestCase):

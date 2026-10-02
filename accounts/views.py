@@ -8,43 +8,11 @@ from drf_yasg.utils import swagger_auto_schema
 
 from .serializers import (
     LoginSerializer,
-    RegisterSerializer,
     UserSerializer,
     LogoutSerializer,
 )
 
 User = get_user_model()
-
-
-class RegisterView(generics.CreateAPIView):
-    """
-    POST /api/auth/register/
-
-    Регистрация нового пользователя. После успешной регистрации
-    сразу возвращает пару JWT токенов (access и refresh), чтобы
-    фронтенд мог сразу авторизовать пользователя.
-    """
-
-    queryset = User.objects.all()
-    serializer_class = RegisterSerializer
-    permission_classes = [permissions.AllowAny]
-
-    def create(self, request, *args, **kwargs):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-
-        refresh = RefreshToken.for_user(user)
-
-        return Response(
-            {
-                "message": "Пользователь успешно зарегистрирован",
-                "user": UserSerializer(user).data,
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-            },
-            status=status.HTTP_201_CREATED,
-        )
 
 
 class LoginView(TokenObtainPairView):

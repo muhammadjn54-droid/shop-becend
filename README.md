@@ -4,7 +4,6 @@ Django REST Framework backend for products, stock, sales, returns and shop stati
 
 ## Main endpoints
 
-- `POST /api/auth/register/`
 - `POST /api/auth/login/`
 - `POST /api/auth/token/refresh/`
 - `GET /api/auth/me/`
