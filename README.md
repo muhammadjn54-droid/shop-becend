@@ -25,7 +25,7 @@ Local development uses SQLite; production requires persistent storage. Never run
 ```
 
 These settings isolate tests from your real database, uploads and outgoing email.
-`python scripts/local_smoke.py` creates a disposable local server at port 8001 with a documented test-only account and removes its temporary data when stopped. It must never be deployed.
+`python scripts/local_smoke.py` starts an isolated local server on port 8000 (override with `UI_SMOKE_PORT`) and creates a documented test-only account. Its database and uploaded files live in a temporary folder that is removed when stopped. To point the frontend at it, run `$env:VITE_API_URL='http://127.0.0.1:8000'` before `npm run dev`. Keep the backend process running while signing in. This smoke server must never be deployed.
 
 ## API contracts
 

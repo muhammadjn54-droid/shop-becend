@@ -23,7 +23,8 @@ with tempfile.TemporaryDirectory(prefix="shop-ui-check-") as directory:
     call_command("migrate", interactive=False, verbosity=0)
     get_user_model().objects.create_user(username="ui-check", password="Temporary-UI-Check123!", first_name="Проверка", email="ui-check@example.test")
     print("Disposable UI account: ui-check / Temporary-UI-Check123!", flush=True)
+    port = os.environ.get("UI_SMOKE_PORT", "8000")
     try:
-        call_command("runserver", "127.0.0.1:8001", use_reloader=False)
+        call_command("runserver", f"127.0.0.1:{port}", use_reloader=False)
     finally:
         connections.close_all()
