@@ -4,6 +4,7 @@ from django.db import transaction
 from django.db.models import F, Sum
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_yasg.utils import swagger_auto_schema
@@ -12,7 +13,6 @@ from .models import Product, ProductImage
 from .serializers import (
     ProductSerializer,
     ProductImageSerializer,
-    FlexibleImageField,
     SellSerializer,
     AddStockSerializer,
     ReturnSerializer,
@@ -35,8 +35,8 @@ class ProductListCreateView(generics.ListCreateAPIView):
     filterset_fields = ["arrival_date", "name", "barcode"]
 
     def get_queryset(self):
-        return Product.objects.filter(user=self.request.user).prefetch_related(
-            "sales__returns"
+        return Product.objects.filter(user=self.request.user, is_archived=False).prefetch_related(
+            "sales__returns", "images"
         )
 
     def perform_create(self, serializer):
@@ -48,18 +48,28 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return Product.objects.filter(user=self.request.user).prefetch_related(
-            "sales__returns"
+            "sales__returns", "images"
         )
+
+    def perform_destroy(self, instance):
+        with transaction.atomic():
+            product = Product.objects.select_for_update().get(pk=instance.pk)
+            product.is_archived = True
+            product.save(update_fields=["is_archived", "updated_at"])
 
 
 class ProductLowStockView(generics.ListAPIView):
     serializer_class = ProductSerializer
+    search_fields = ProductListCreateView.search_fields
+    ordering_fields = ProductListCreateView.ordering_fields
+    filterset_fields = ProductListCreateView.filterset_fields
 
     def get_queryset(self):
         return Product.objects.filter(
             user=self.request.user,
+            is_archived=False,
             quantity_received__lte=F("quantity_sold") + 5,
-        ).prefetch_related("sales__returns")
+        ).prefetch_related("sales__returns", "images")
 
 
 class ProductSalesHistoryView(generics.ListAPIView):
@@ -85,7 +95,8 @@ class ProductSellView(APIView):
 
         with transaction.atomic():
             product = get_object_or_404(
-                Product.objects.select_for_update(), id=pk, user=request.user
+                Product.objects.select_for_update(), id=pk, user=request.user,
+                is_archived=False,
             )
             price_per_item = serializer.validated_data.get(
                 "price_per_item", product.selling_price
@@ -131,7 +142,7 @@ class ProductSellView(APIView):
             {
                 "message": "Товар успешно продан",
                 "sale": SaleSerializer(sale).data,
-                "product": ProductSerializer(product).data,
+                "product": ProductSerializer(product, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -147,7 +158,8 @@ class ProductAddStockView(APIView):
 
         with transaction.atomic():
             product = get_object_or_404(
-                Product.objects.select_for_update(), id=pk, user=request.user
+                Product.objects.select_for_update(), id=pk, user=request.user,
+                is_archived=False,
             )
             product.quantity_received += quantity
             update_fields = ["quantity_received", "updated_at"]
@@ -161,7 +173,7 @@ class ProductAddStockView(APIView):
         return Response(
             {
                 "message": "Количество товара увеличено",
-                "product": ProductSerializer(product).data,
+                "product": ProductSerializer(product, context={"request": request}).data,
             },
             status=status.HTTP_200_OK,
         )
@@ -249,7 +261,7 @@ class ProductReturnView(APIView):
             {
                 "message": "Возврат товара успешно оформлен",
                 "returns": SaleReturnSerializer(created_returns, many=True).data,
-                "product": ProductSerializer(product).data,
+                "product": ProductSerializer(product, context={"request": request}).data,
             },
             status=status.HTTP_200_OK,
         )
@@ -260,13 +272,15 @@ class StatisticsView(APIView):
         products = list(
             Product.objects.filter(user=request.user).prefetch_related("sales__returns")
         )
+        active_products = [product for product in products if not product.is_archived]
 
         return Response(
             {
-                "products_count": len(products),
+                "products_count": len(active_products),
                 "total_items_received": sum(p.quantity_received for p in products),
                 "total_items_sold": sum(p.quantity_sold for p in products),
-                "total_items_remaining": sum(p.remaining_quantity for p in products),
+                "total_items_remaining": sum(p.remaining_quantity for p in active_products),
+                "total_items_archived": sum(p.remaining_quantity for p in products if p.is_archived),
                 "total_revenue": sum(
                     (p.revenue for p in products), Decimal("0.00")
                 ),
@@ -286,8 +300,9 @@ class StatisticsView(APIView):
 class DashboardView(APIView):
     def get(self, request):
         products = list(
-            Product.objects.filter(user=request.user).prefetch_related("sales__returns")
+            Product.objects.filter(user=request.user).prefetch_related("sales__returns", "images")
         )
+        active_products = [product for product in products if not product.is_archived]
 
         recent_sales = (
             Sale.objects.filter(user=request.user)
@@ -297,13 +312,13 @@ class DashboardView(APIView):
         )
 
         top_products = sorted(
-            products, key=lambda p: p.quantity_sold, reverse=True
+            active_products, key=lambda p: p.quantity_sold, reverse=True
         )[:5]
 
         return Response(
             {
-                "total_products": len(products),
-                "total_remaining": sum(p.remaining_quantity for p in products),
+                "total_products": len(active_products),
+                "total_remaining": sum(p.remaining_quantity for p in active_products),
                 "total_sold": sum(p.quantity_sold for p in products),
                 "total_revenue": sum(
                     (p.revenue for p in products), Decimal("0.00")
@@ -315,103 +330,68 @@ class DashboardView(APIView):
                     (p.loss for p in products), Decimal("0.00")
                 ),
                 "recent_sales": SaleSerializer(recent_sales, many=True).data,
-                "top_products": ProductSerializer(top_products, many=True).data,
+                "top_products": ProductSerializer(top_products, many=True, context={"request": request}).data,
             }
         )
 
 
 class ProductImageUploadView(APIView):
-    """
-    POST /api/products/{id}/images/
-    Загрузить одну или несколько фотографий к товару (поддерживает > 5 фото).
-    """
+    """Upload one or more gallery photos after validating the whole batch."""
 
     def post(self, request, pk):
-        product = get_object_or_404(Product, id=pk, user=request.user)
+        product = get_object_or_404(
+            Product, id=pk, user=request.user, is_archived=False
+        )
+        images = []
+        for key in ("images", "uploaded_images", "image"):
+            if key in request.data:
+                images = request.data.getlist(key) if hasattr(request.data, "getlist") else request.data[key]
+                if not isinstance(images, list):
+                    images = [images]
+                break
+        if not images:
+            raise ValidationError({"images": "Не передано ни одного изображения"})
 
-        images_list = []
-        if hasattr(request.data, "getlist"):
-            images_list = (
-                request.data.getlist("images")
-                or request.data.getlist("uploaded_images")
-            )
-        if not images_list and "images" in request.data:
-            val = request.data.get("images")
-            if isinstance(val, list):
-                images_list = val
-            elif val:
-                images_list = [val]
-        if not images_list and hasattr(request, "FILES"):
-            images_list = (
-                request.FILES.getlist("images")
-                or request.FILES.getlist("uploaded_images")
-                or request.FILES.getlist("image")
-            )
-        if not images_list and "image" in request.data:
-            images_list = [request.data.get("image")]
-
-        if not images_list:
-            return Response(
-                {"detail": "Не передано ни одного изображения"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        field = FlexibleImageField()
-        created_images = []
-        for img_item in images_list:
-            if not img_item:
-                continue
-            try:
-                processed_file = field.to_internal_value(img_item)
-                if processed_file:
-                    img_obj = ProductImage.objects.create(
-                        product=product, image=processed_file
-                    )
-                    created_images.append(img_obj)
-            except Exception as e:
-                return Response(
-                    {"detail": f"Ошибка обработки изображения: {e}"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-        if not product.image and product.images.exists():
-            product.image = product.images.first().image
-            product.save(update_fields=["image"])
-
+        serializer = ProductSerializer(
+            product, data={"images": images}, partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        product = serializer.save()
         return Response(
             {
-                "message": f"Успешно добавлено изображений: {len(created_images)}",
+                "message": f"Успешно добавлено изображений: {len(images)}",
                 "images": ProductImageSerializer(
                     product.images.all(), many=True, context={"request": request}
                 ).data,
-                "product": ProductSerializer(
-                    product, context={"request": request}
-                ).data,
+                "product": ProductSerializer(product, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED,
         )
 
 
 class ProductImageDeleteView(APIView):
-    """
-    DELETE /api/products/{id}/images/{image_id}/
-    Удалить конкретную фотографию товара.
-    """
+    """Delete a gallery photo without overwriting concurrent inventory changes."""
 
     def delete(self, request, pk, image_id):
-        product = get_object_or_404(Product, id=pk, user=request.user)
-        img_obj = get_object_or_404(ProductImage, id=image_id, product=product)
-        was_main = bool(
-            product.image
-            and product.image.name
-            and (img_obj.image.name == product.image.name)
-        )
-        img_obj.delete()
-
-        if was_main:
-            remaining = product.images.first()
-            product.image = remaining.image if remaining else None
-            product.save(update_fields=["image"])
+        with transaction.atomic():
+            product = get_object_or_404(
+                Product.objects.select_for_update(),
+                id=pk, user=request.user, is_archived=False,
+            )
+            # A legacy single main image is represented by gallery id 0.
+            if image_id == 0 and product.image and not product.images.exists():
+                product.image = None
+            else:
+                img_obj = get_object_or_404(ProductImage, id=image_id, product=product)
+                was_main = bool(
+                    product.image and img_obj.image.name == product.image.name
+                )
+                img_obj.delete()
+                if was_main:
+                    remaining = product.images.first()
+                    product.image = remaining.image if remaining else None
+            product.save(update_fields=["image", "updated_at"])
 
         return Response(
             {
@@ -419,9 +399,7 @@ class ProductImageDeleteView(APIView):
                 "images": ProductImageSerializer(
                     product.images.all(), many=True, context={"request": request}
                 ).data,
-                "product": ProductSerializer(
-                    product, context={"request": request}
-                ).data,
+                "product": ProductSerializer(product, context={"request": request}).data,
             },
             status=status.HTTP_200_OK,
         )

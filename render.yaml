@@ -1,8 +1,5 @@
-# Render Blueprint — https://render.com/docs/blueprint-spec
-#
-# Deploy with: New → Blueprint → point at this repository.
-# The start command lives here, so it can never be a stray value like "12".
-
+# Configure PostgreSQL, Cloudinary and the frontend URL before deployment.
+# See DEPLOY.md. No database or paid disk is provisioned by this blueprint.
 services:
   - type: web
     name: shop-backend
@@ -10,8 +7,6 @@ services:
     plan: free
     region: frankfurt
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
-    # Migrations run on every start: a brand new database has no tables, and
-    # without this the app returns 500 until somebody migrates by hand.
     startCommand: >-
       sh -c "python manage.py migrate --noinput &&
       gunicorn shop_backend.wsgi:application
@@ -23,26 +18,27 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.10"
-      - key: SECRET_KEY
-        generateValue: true
       - key: DEBUG
         value: "false"
+      - key: SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: ALLOWED_HOSTS
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
       - key: WEB_CONCURRENCY
         value: "1"
       - key: WEB_THREADS
         value: "4"
-      # Uncomment to keep SQLite and uploaded images across redeploys.
-      # Requires the disk block at the bottom (disks are a paid add-on).
-      # - key: DATA_DIR
-      #   value: /var/data
-      #
-      # For a permanent shared database use this instead:
-      # - key: DATABASE_URL
-      #   value: postgresql://USER:PASSWORD@HOST:5432/DBNAME
-
-  # Uncomment together with DATA_DIR above to keep SQLite and uploaded
-  # images across restarts. Disks are a paid add-on; the free plan has none.
-  # - type: disk
-  #   name: shop-data
-  #   mountPath: /var/data
-  #   sizeGB: 1

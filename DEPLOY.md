@@ -1,108 +1,80 @@
-# Deployment
+# PostgreSQL ва нашри бехатари Shop Inventory
 
-Django + DRF backend for the shop inventory app.
+## Сабаби хориҷ шудани аккаунт
 
-- Backend repository: `shop-becend` (this one)
-- Frontend repository: `shop-of-` (React, talks to the backend over `/api/`)
+Дар санҷиши 4 октябри 2026 `/api/health/` дар сервери ҳозира SQLite-ро дар `/tmp/db.sqlite3` нишон дод; `DATABASE_URL` насб нашуда буд. Файлҳои муваққатии Vercel базаи доимӣ нестанд. Ҳангоми иваз шудани instance ё redeploy аккаунт метавонад дигар ёфт нашавад ва API хатои 401 диҳад.
 
-## Why the database matters
+Коди нав дар Vercel бе PostgreSQL ва анбори доимии аксҳо оғоз намешавад. **Пеш аз merge/deploy танзимоти поёнро анҷом диҳед.** Ҳоло ин дастур омода шудааст; базаи беруна сохта нашудааст ва маълумоти production кӯчонда нашудааст.
 
-### Vercel (serverless) — SQLite cannot work
+## 1. PostgreSQL созед
 
-Vercel runs each request in a **separate serverless instance** with its own
-`/tmp`. A SQLite file in `/tmp` is therefore not shared and is deleted when
-an instance recycles. Measured on production: one freshly registered user,
-one valid token, 10 parallel requests:
+Роҳи пешниҳодшуда барои Vercel: [Neon дар Vercel Marketplace](https://vercel.com/marketplace/neon/neon). Пеш аз интихоб шартҳо, маҳдудият ва нархи нақшаи ҷориро бинед.
 
-```
-8x HTTP 401 (user not found on this instance)
-2x HTTP 200 (user found)
-```
+1. Ба Vercel дароед, лоиҳаи backend `shop-becend`-ро кушоед ва аз Marketplace интегратсияи Neon-ро интихоб кунед. Ё дар Neon мустақилона project созед.
+2. Базаи production ва минтақаи ба backend наздикро интихоб кунед. Барои preview база ё branch-и ҷудо истифода баред: preview набояд ба маълумоти воқеӣ нависад.
+3. Аз панели **Connect** connection string-и PostgreSQL-ро гиред. Барои runtime-и serverless аз pooled connection-и провайдер истифода баред; параметрҳои TLS-и додаашро нигоҳ доред.
+4. Дар backend → Settings → Environment Variables онро бо номи маҳз `DATABASE_URL` сабт кунед. Агар интегратсия танҳо `POSTGRES_URL` дода бошад, барнома ҳоло `DATABASE_URL`-ро мехонад: ҳамин номро низ танзим кунед.
+5. Парол ё URL-и базаро ба GitHub, screenshot ё чат нафиристед. Барои Development, Preview ва Production пайвастҳои мувофиқро ҷудо танзим кунед.
 
-So accounts, products and sales disappear within minutes, and the same
-product returns 200 or 404 depending on which instance answers. **On Vercel
-you must set `DATABASE_URL` to a real PostgreSQL.** `settings.py` prints
-`[CRITICAL]` at boot while it is missing.
+Барои базаи дигар ҳам connection string-и стандартии PostgreSQL кор мекунад: `postgresql://USER:PASSWORD@HOST:5432/DBNAME?sslmode=require`. Ин танҳо намуна аст.
 
-### Render — SQLite is fine
+## 2. Аксу файлҳоро доимӣ нигоҳ доред
 
-Render runs **one long-running process**, not a fresh instance per request,
-so SQLite behaves normally and no external database is required. Its
-filesystem is still wiped on every redeploy, so either attach a Persistent
-Disk or use PostgreSQL.
+Дар Cloudinary аккаунт/cloud-и худро омода карда, се қиматро танҳо дар environment-и backend гузоред:
 
-## Check what a deployment is actually using
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
 
-```
-GET /api/health/
-```
+Vercel диск барои нигоҳдории доимии upload-и Django надорад. PostgreSQL танҳо маълумоти база ва истиноди аксҳоро нигоҳ медорад; худи файлҳоро Cloudinary нигоҳ медорад. Аксҳои мавҷударо пеш аз кӯчиш нусха бардоред ва барои кӯчондани онҳо нақшаи ҷудо иҷро кунед; иваз кардани storage худ аз худ файлҳои пешинаро намекӯчонад.
 
-```json
-{
-  "status": "ok",
-  "db_engine": "django.db.backends.postgresql",
-  "is_postgres": true,
-  "database_url_set": true,
-  "is_vercel": false,
-  "is_render": true,
-  "data_dir": null,
-  "db_reachable": true,
-  "instance": "3f9a1c22"
-}
-```
+## 3. Environment-и backend
 
-It never prints credentials, hosts or passwords. `instance` changes on every
-serverless instance, so two parallel requests returning different values
-proves requests are landing on different processes (the Vercel problem).
+| Ном | Қимат / маъно |
+| --- | --- |
+| `DEBUG` | `False` |
+| `SECRET_KEY` | Қимати тасодуфии доимӣ, ҳадди ақал 50 аломат; ҳангоми ҳар deploy нав накунед |
+| `DATABASE_URL` | Пайвасти PostgreSQL аз қадами 1 |
+| `ALLOWED_HOSTS` | `shop-becend.vercel.app` ва домени худ, бе `https://` |
+| `CORS_ALLOWED_ORIGINS` | URL-и пурраи frontend, масалан `https://YOUR-FRONTEND.vercel.app`, бе `/` дар охир |
+| `CSRF_TRUSTED_ORIGINS` | URL-и frontend ва backend бо `https://` |
+| `FRONTEND_URL` | URL-и frontend барои пайванди барқароркунии парол |
+| се `CLOUDINARY_...` | Қиматҳои қадами 2 |
 
-## Deploying to Render
+Барои сохтани SECRET_KEY дар компютери худ `python -c "import secrets; print(secrets.token_urlsafe(64))"` иҷро карда, натиҷаро мустақим дар environment сабт кунед. Натиҷаро commit накунед.
 
-`render.yaml` is a Blueprint, so nothing needs typing into a dashboard:
+Барои фиристодани мактубҳои reset, `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend`, `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL` ва TLS/SSL-и мувофиқи SMTP-ро гузоред. Бе SMTP мактуб ба корбар намеравад; дар local танҳо ба console мебарояд. `EMAIL_USE_TLS` ва `EMAIL_USE_SSL`-ро ҳамзамон фаъол накунед.
 
-1. Render → **New → Blueprint** → select this repository → apply.
-2. It sets the build command, the start command, `SECRET_KEY`, and
-   `healthCheckPath: /api/health/`.
-3. Optional: uncomment the `disk` block and `DATA_DIR` to keep data across
-   redeploys, or set `DATABASE_URL` for PostgreSQL.
+## 4. Backup ва migration
 
-If you configure the service by hand instead, the two commands are:
+Пеш аз иваз кардани production маълумоти мавҷударо backup кунед. Базаи `/tmp` байни instance-ҳо умумӣ нест; агар instance-и кӯҳна аллакай нест шуда бошад, маълумоти гумшударо аз он барқарор карда намешавад. Коди нав худкор маълумоти кӯҳнаро намекӯчонад.
 
-```
-build:  pip install -r requirements.txt && python manage.py collectstatic --noinput
-start:  sh -c "python manage.py migrate --noinput && gunicorn shop_backend.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120"
-```
+Барои базаи нав, аз checkout-и ҳамин версия дар муҳити боэътимод:
 
-`migrate` must run before gunicorn: a brand new database has no tables and
-every request would fail with `no such table: accounts_customuser`.
+1. `python -m pip install -r requirements.txt`
+2. `.env.example`-ро ба `.env` нусха кунед. Дар `.env` пайвасти базаи мақсаднок ва дигар қиматҳоро маҳаллӣ гузоред; файл ignored аст. Барои migration метавонед direct connection-и провайдерро истифода баред. Аз интихоб шудани базаи дуруст бовар ҳосил кунед.
+3. `python manage.py check`
+4. `python manage.py migrate --plan` — нақшаи тағйиротро бинед.
+5. `python manage.py migrate --noinput`
+6. Агар admin лозим бошад: `python manage.py createsuperuser`.
 
-> A start command of `12` (a Python version typed into the wrong field)
-> fails with `bash: line 1: 12: command not found`. The commands above live
-> in the repository precisely so this cannot happen.
+Барои базаи кӯҳна аввал нусхаи онро дар базаи озмоишӣ барқарор карда, migration-ро дар он санҷед. Ҳисобҳои бо login/email-и якхела аз рӯи ҳарфҳои калон/хурд бояд бо соҳибонашон ислоҳ шаванд. Migration 0005 ҳангоми чунин ихтилоф ID-ҳоро нишон дода бозмеистад; аккаунтҳоро ҳазф ё якҷо намекунад.
 
-## Deploying to Vercel
+Migration-и кӯҳнаи default admin дигар парол ё аккаунт намесозад. Агар он қаблан дар production иҷро шуда бошад, аккаунтҳои admin-ро тафтиш кунед ва пароли пешфарзро бо `python manage.py changepassword <username>` иваз кунед. Истифодабарандагони дорои token-и версияи кӯҳна метавонанд як бор аз нав login кунанд.
 
-`vercel.json` points at `shop_backend/wsgi.py`. Set `DATABASE_URL` to a
-PostgreSQL connection string, otherwise the app runs on per-instance
-`/tmp` SQLite and loses all data.
+Migration дигар ҳангоми ҳар оғоз шудани WSGI худкор иҷро намешавад. Дар Vercel онро ҳамчун қадами назоратшавандаи release, пеш аз deploy, иҷро кунед. Дар Render start command migration-ро пеш аз gunicorn иҷро мекунад; backup ва санҷиши пешакӣ ҳамоно лозим аст.
 
-## Pointing the frontend at a deployment
+## 5. Frontend ва санҷиши release
 
-In the frontend repository set `VITE_API_URL` (no trailing slash, **no
-`/api` suffix** — the app appends `/api/...` itself):
+1. Дар environment-и frontend `VITE_API_URL=https://shop-becend.vercel.app` гузоред (бе `/api`). Барои preview backend-и preview-ро нишон диҳед.
+2. Backend-ро бо env-и пурра deploy кунед; баъд frontend-ро. Тағйири env ба deployment-и нав татбиқ мешавад: [дастури Vercel](https://vercel.com/docs/environment-variables/managing-environment-variables).
+3. `/api/health/` бояд HTTP 200, `status=ok`, `is_postgres=true`, `db_reachable=true` диҳад. HTTP 503 маънои дастнорас будани база дорад.
+4. Дар муҳити озмоишӣ register/login кунед, саҳифаро reload кунед, вкладкаи дуюм кушоед, профил/номро тағйир диҳед. Аккаунт бояд боқӣ монад.
+5. Мол илова кунед, фурӯш ва баргардонӣ иҷро кунед. Ҷустуҷӯ, бақия, фоида ва архивро муқоиса кунед; таърихи чек пас аз архив бояд боқӣ монад.
+6. Бо SMTP-и танзимшуда reset-ро аз мактуб санҷед; пайванди истифодашуда дубора кор намекунад. Дар staging redeploy карда, боқӣ мондани аккаунт/мол/аксро санҷед.
 
-```
-VITE_API_URL=https://your-backend.onrender.com
-```
+Код ва автоматикӣ-тестҳо SQLite-ро барои local дастгирӣ мекунанд; CI инчунин PostgreSQL-ро месанҷад. Бе танзим ва санҷиши боло нашри production пурра анҷомшуда ҳисоб намешавад.
 
-It defaults to `https://shop-becend.vercel.app`, so nothing is required
-while using the Vercel deployment.
+## Render
 
-## Tests
-
-```bash
-python manage.py test          # 59 tests
-```
-
-Covers barcode uniqueness and per-user isolation, concurrent sales
-(no `database is locked`, no lost updates), the refresh-token race that
-used to log users out, email uniqueness, and the `/api/health/` contract.
+`render.yaml` PostgreSQL ва Cloudinary-ро ҳамчун environment-и дастӣ талаб мекунад; он база ё диски пулакӣ намесозад. Алтернатива — диски воқеан доимӣ бо `DATA_DIR` дар host-и мувофиқ. Танҳо навиштани `/var/data` бе mount маълумотро доимӣ намекунад. Барои Vercel ин алтернатива истифода намешавад.

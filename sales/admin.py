@@ -3,8 +3,21 @@ from django.contrib import admin
 from .models import Sale, SaleReturn
 
 
+class ReadOnlyLedgerAdmin(admin.ModelAdmin):
+    """Stock counters must change through the transactional sale/return API."""
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
 @admin.register(Sale)
-class SaleAdmin(admin.ModelAdmin):
+class SaleAdmin(ReadOnlyLedgerAdmin):
     list_display = (
         "id",
         "product",
@@ -22,7 +35,7 @@ class SaleAdmin(admin.ModelAdmin):
 
 
 @admin.register(SaleReturn)
-class SaleReturnAdmin(admin.ModelAdmin):
+class SaleReturnAdmin(ReadOnlyLedgerAdmin):
     list_display = (
         "id",
         "product",

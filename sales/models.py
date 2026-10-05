@@ -8,7 +8,7 @@ from products.models import Product
 
 class Sale(models.Model):
     product = models.ForeignKey(
-        Product, on_delete=models.CASCADE, related_name="sales"
+        Product, on_delete=models.PROTECT, related_name="sales"
     )
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sales"
@@ -62,6 +62,24 @@ class Sale(models.Model):
         )
         return self.total_amount - refunded
 
+    @property
+    def net_cost_amount(self):
+        return self.cost_amount - sum(
+            (item.returned_cost for item in self.returns.all()), Decimal("0.00")
+        )
+
+    @property
+    def net_profit(self):
+        return self.profit - sum(
+            (item.profit_reversal for item in self.returns.all()), Decimal("0.00")
+        )
+
+    @property
+    def net_loss(self):
+        return self.loss - sum(
+            (item.loss_reversal for item in self.returns.all()), Decimal("0.00")
+        )
+
 
 class SaleReturn(models.Model):
     user = models.ForeignKey(
@@ -71,7 +89,7 @@ class SaleReturn(models.Model):
     )
     product = models.ForeignKey(
         Product,
-        on_delete=models.CASCADE,
+        on_delete=models.PROTECT,
         related_name="sale_returns",
     )
     sale = models.ForeignKey(

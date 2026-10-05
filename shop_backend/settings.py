@@ -12,6 +12,21 @@ except ImportError:
     dj_database_url = None
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load local .env if present
+_env_file = BASE_DIR / ".env"
+if _env_file.exists() and os.environ.get("LOAD_DOTENV", "true").lower() not in {"0", "false", "no"}:
+    with open(_env_file, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            _k = _k.strip()
+            _v = _v.strip().strip("'\"")
+            if _k not in os.environ:
+                os.environ[_k] = _v
+
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 IS_RENDER = bool(os.environ.get("RENDER"))
 # On Render the filesystem is ephemeral unless a Persistent Disk is mounted at
@@ -32,16 +47,23 @@ def env_list(name, default=""):
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+IS_PRODUCTION = IS_VERCEL or IS_RENDER or env_bool("PRODUCTION")
+
 SECRET_KEY = os.environ.get(
     "SECRET_KEY",
     "django-insecure-local-development-only-change-me",
 )
 
-DEBUG = env_bool("DEBUG", default=not (IS_VERCEL or IS_RENDER))
+DEBUG = env_bool("DEBUG", default=not IS_PRODUCTION)
+if (IS_PRODUCTION or not DEBUG) and (
+    len(SECRET_KEY) < 50
+    or SECRET_KEY.startswith(("django-insecure-", "change-me"))
+):
+    raise RuntimeError("Set SECRET_KEY to a stable random secret of at least 50 characters.")
 
 ALLOWED_HOSTS = env_list(
     "ALLOWED_HOSTS",
-    "*,localhost,127.0.0.1,.vercel.app,.onrender.com",
+    "localhost,127.0.0.1,.vercel.app,.onrender.com",
 )
 render_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
 if render_host and render_host not in ALLOWED_HOSTS:
@@ -97,8 +119,8 @@ if CLOUDINARY_ENABLED:
             "cloudinary_storage",
         )
         INSTALLED_APPS.append("cloudinary")
-    except ImportError:
-        CLOUDINARY_ENABLED = False
+    except ImportError as exc:
+        raise RuntimeError("Cloudinary is configured but its storage dependencies are missing.") from exc
 
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
@@ -117,7 +139,7 @@ if cors_origins:
     CORS_ALLOWED_ORIGINS = cors_origins
     CORS_ALLOW_ALL_ORIGINS = False
 else:
-    CORS_ALLOW_ALL_ORIGINS = True
+    CORS_ALLOW_ALL_ORIGINS = DEBUG and not IS_PRODUCTION
 CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = "shop_backend.urls"
@@ -157,16 +179,13 @@ if DATABASE_URL:
         )
     }
 else:
-    # SQLite fallback.
-    #
-    # On Vercel this file lands in /tmp, which is per-serverless-instance and
-    # therefore useless for real data - see the warning below.
-    # On Render there is a single long-running process, so SQLite works; set
-    # DATA_DIR=/var/data and attach a Persistent Disk to keep it across
-    # restarts and redeploys.
     if IS_VERCEL:
-        SQLITE_PATH = "/tmp/db.sqlite3"
-    elif DATA_DIR:
+        raise RuntimeError("Vercel requires a persistent PostgreSQL DATABASE_URL; /tmp SQLite loses accounts.")
+    if IS_PRODUCTION and not DATA_DIR:
+        raise RuntimeError("Production requires DATABASE_URL or DATA_DIR on a mounted persistent disk.")
+    if DATA_DIR:
+        if not Path(DATA_DIR).is_absolute():
+            raise RuntimeError("DATA_DIR must be an absolute path on a persistent disk.")
         SQLITE_PATH = str(Path(DATA_DIR) / "db.sqlite3")
         Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
     else:
@@ -188,29 +207,12 @@ else:
         }
     }
 
-# Ephemeral storage warning: on Vercel, when DATABASE_URL is not configured the
-# app falls back to SQLite inside /tmp, which is per-instance and gets wiped.
-# Proven on production: parallel requests are served by different instances,
-# so a just-created user returns 401/404 on most of them.
-if IS_VERCEL and not DATABASE_URL:
-    import sys
-
-    print(
-        "\n[CRITICAL] DATABASE_URL is not set on Vercel: falling back to "
-        "ephemeral SQLite in /tmp. Data is lost when instances restart.\n",
-        file=sys.stderr,
-    )
-
-if IS_RENDER and not DATABASE_URL and not DATA_DIR:
-    import sys as _sys
-
-    print(
-        "\n[WARNING] Neither DATABASE_URL nor DATA_DIR is set on Render.\n"
-        "SQLite will be written to the code directory, so all data is lost\n"
-        "on every restart and redeploy. Attach a Persistent Disk and set\n"
-        "DATA_DIR=/var/data, or set DATABASE_URL.\n",
-        file=_sys.stderr,
-    )
+if IS_PRODUCTION and DATABASE_URL and "sqlite" in DATABASES["default"]["ENGINE"]:
+    raise RuntimeError("Do not use a SQLite DATABASE_URL in production; use PostgreSQL or persistent DATA_DIR.")
+if IS_VERCEL and "postgresql" not in DATABASES["default"]["ENGINE"]:
+    raise RuntimeError("Vercel requires a shared PostgreSQL DATABASE_URL.")
+if IS_PRODUCTION and not CLOUDINARY_ENABLED and (IS_VERCEL or not DATA_DIR):
+    raise RuntimeError("Production uploads require Cloudinary or DATA_DIR on a persistent disk.")
 
 AUTH_USER_MODEL = "accounts.CustomUser"
 
@@ -290,14 +292,13 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=6),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
-    "ROTATE_REFRESH_TOKENS": True,
-    # Two browser tabs share localStorage but not JS memory, so they can
-    # refresh with the same token at the same time. Blacklisting on rotation
-    # made the loser of that race get 401 and wipe the shared tokens, logging
-    # the user out everywhere. LogoutView still blacklists explicitly.
+    # Stable refresh tokens avoid simultaneous-tab rotation races and let
+    # logout revoke the actual token used by every tab in that session.
+    "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": False,
+    "CHECK_REVOKE_TOKEN": True,
     "UPDATE_LAST_LOGIN": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
 }
@@ -320,3 +321,23 @@ ALLOWED_IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"]
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_IMAGE_SIZE_MB * 1024 * 1024 * 2
 FILE_UPLOAD_MAX_MEMORY_SIZE = MAX_IMAGE_SIZE_MB * 1024 * 1024 * 2
+
+# Email settings for password reset and notifications
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.smtp.EmailBackend"
+    if EMAIL_HOST_USER
+    else "django.core.mail.backends.console.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+EMAIL_USE_SSL = env_bool("EMAIL_USE_SSL", False)
+EMAIL_TIMEOUT = 15
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL",
+    EMAIL_HOST_USER or "Shop Inventory <noreply@shop-inventory.local>",
+)
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")

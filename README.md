@@ -1,114 +1,60 @@
 # Shop Inventory API
 
-Django REST Framework backend for products, stock, sales, returns and shop statistics.
+Django REST API for accounts, products, stock, sales, returns and statistics.
+For persistent production deployment, including PostgreSQL setup in Tajik, see [DEPLOY.md](DEPLOY.md).
 
-## Main endpoints
+## Local development (PowerShell)
 
-- `POST /api/auth/login/`
-- `POST /api/auth/token/refresh/`
-- `GET /api/auth/me/`
-- `POST /api/auth/logout/`
-- `GET/POST /api/products/`
-- `GET/PATCH/PUT/DELETE /api/products/{id}/`
-- `POST /api/products/{id}/sell/`
-- `POST /api/products/{id}/add-stock/`
-- `POST /api/products/{id}/return/`
-- `GET /api/products/{id}/sales/`
-- `GET /api/products/low-stock/`
-- `GET /api/sales/`
-- `GET /api/sales/{id}/`
-- `GET /api/statistics/`
-- `GET /api/dashboard/`
-
-Swagger is available at `/`, `/swagger/` and Redoc at `/redoc/`.
-
-## Accounting logic
-
-Each sale stores a financial snapshot at the moment of sale:
-
-- `price_per_item` — actual sale price
-- `purchase_price_per_item` — purchase price at that moment
-- `total_amount = quantity * price_per_item`
-- `cost_amount = quantity * purchase_price_per_item`
-- `profit` and `loss` are stored on the sale
-
-Product revenue, cost, profit and loss are calculated from real sales and reduced by real returns. Changing the current product price later does not rewrite old sale history.
-
-Returns are stored in `SaleReturn`. `POST /api/products/{id}/return/` accepts:
-
-```json
-{
-  "quantity": 1
-}
-```
-
-Optional `sale_id` can be supplied. Without it, returns are applied to the newest available sales first (LIFO).
-
-## Local setup
-
-```bash
+```powershell
 python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py runserver
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py runserver
 ```
 
-## Production environment
+Use registration to create a normal account. There is no seeded administrator or public default password.
+Create an administrator only when needed with `python manage.py createsuperuser`.
+Local development uses SQLite; production requires persistent storage. Never run production with test settings.
 
-Never commit real secrets. Configure them in Vercel Environment Variables.
+## Checks
 
-Recommended variables:
-
-```env
-SECRET_KEY=strong-random-secret
-DEBUG=False
-DATABASE_URL=postgresql://USER:PASSWORD@HOST:PORT/DBNAME
-ALLOWED_HOSTS=shop-becend.vercel.app,.vercel.app
-CORS_ALLOWED_ORIGINS=https://YOUR-FRONTEND.vercel.app
-CSRF_TRUSTED_ORIGINS=https://shop-becend.vercel.app/
-CLOUDINARY_CLOUD_NAME=...
-CLOUDINARY_API_KEY=...
-CLOUDINARY_API_SECRET=...
+```powershell
+.\.venv\Scripts\python.exe manage.py test --settings=shop_backend.test_settings
+.\.venv\Scripts\python.exe manage.py makemigrations --check --dry-run --settings=shop_backend.test_settings
 ```
 
-### PostgreSQL
+These settings isolate tests from your real database, uploads and outgoing email.
+`python scripts/local_smoke.py` starts an isolated local server on port 8000 (override with `UI_SMOKE_PORT`) and creates a documented test-only account. Its database and uploaded files live in a temporary folder that is removed when stopped. To point the frontend at it, run `$env:VITE_API_URL='http://127.0.0.1:8000'` before `npm run dev`. Keep the backend process running while signing in. This smoke server must never be deployed.
 
-If `DATABASE_URL` is set, the project uses PostgreSQL through `dj-database-url`. Local development falls back to SQLite.
+## API contracts
 
-Vercel also has a SQLite fallback only so the deployment can boot before configuration, but `/tmp` is not persistent and must not be used for real production data. Set `DATABASE_URL` before using the application with real data.
+Swagger: `/swagger/`; Redoc: `/redoc/`; database health: `/api/health/`.
 
-### Product images
+- `POST /api/auth/register/`, `/login/`: return access, refresh and user.
+- `POST /api/auth/token/refresh/`: stable refresh token, returns a new access token.
+- `GET/PATCH /api/auth/me/`: profile, editable username/first_name/last_name. Email is read-only.
+- `POST /api/auth/logout/`: revoke the supplied refresh token even if access expired.
+- `POST /api/auth/forgot-password/`, `/reset-password/`: email reset flow; SMTP required in production.
+- `GET/POST /api/products/`, `GET/PATCH/PUT/DELETE /api/products/{id}/`.
+- `POST /api/products/{id}/sell/`, `/add-stock/`, `/return/`.
+- `GET /api/products/{id}/sales/`, `/api/products/low-stock/`.
+- `GET /api/sales/`, `/api/sales/{id}/`, `/api/statistics/`, `/api/dashboard/`.
 
-If all three Cloudinary variables are configured, uploaded product images use Cloudinary storage.
+Lists use pages of 20. Product, low-stock and sales lists accept `search` (name or barcode).
+Every object is scoped to the authenticated owner. Logout revokes refresh; already issued access tokens expire within 15 minutes. Password reset invalidates both types.
 
-Without them, local filesystem storage is used. Vercel filesystem is not persistent, so Cloudinary or another persistent object storage should be configured in production.
+## Stock and history
 
-## Deploy / migration
+Sales snapshot the purchase and selling prices. Returns reduce revenue, cost, profit and loss using those historical prices. Changing current prices never rewrites sale history.
+Sell, return and stock changes use database transactions and lock the product row. Edits reload the row before applying writable fields; clients should send `expected_updated_at` from their last product read to reject stale edits.
 
-After changing models:
+DELETE archives the product: it disappears from active stock but keeps sales and returns. An archived product cannot be edited, sold or restocked, but a previous sale can be returned. Archived units are reported separately from active remaining stock. Database foreign keys protect sale history from hard deletion. The admin ledger is read-only; create sales and returns through the API.
 
-```bash
-python manage.py migrate
-python manage.py check
-python manage.py test
-```
+Images accept JPEG/PNG/WebP up to 5 MB per file. Remote URLs are not downloaded. Galleries validate before writing and failed uploads roll back the product change. Configure Cloudinary on Vercel; its filesystem cannot retain uploads.
 
-The migration `sales/0002_sale_snapshots_and_returns.py` backfills old sales using the already stored financial values:
+## Existing installations
 
-```
-cost_amount = total_amount - profit + loss
-```
+Back up the database and uploads before migrations. Migration 0005 rejects ambiguous case-insensitive usernames/emails with affected IDs; resolve those records with their owners before retrying. It never silently merges accounts.
 
-This preserves old accounting as accurately as the existing data allows.
-
-## JWT
-
-Send protected requests with:
-
-```http
-Authorization: Bearer <access_token>
-```
-
-Every product and sale query is scoped to `request.user`.
-
+The former default-admin migration is now a no-op. Existing installations that already ran it retain their accounts: audit those administrators and use `python manage.py changepassword <username>` to replace any old default password. New password-bound JWT checks may require existing users to log in once after this release.

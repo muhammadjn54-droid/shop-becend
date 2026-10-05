@@ -6,6 +6,7 @@ from .serializers import SaleSerializer
 
 class SaleListView(generics.ListAPIView):
     serializer_class = SaleSerializer
+    search_fields = ["product__name", "product__barcode"]
     ordering_fields = ["sold_at", "total_amount", "profit", "loss"]
 
     def get_queryset(self):

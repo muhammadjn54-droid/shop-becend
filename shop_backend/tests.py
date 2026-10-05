@@ -110,6 +110,8 @@ class SQLiteConcurrentWriteTests(SimpleTestCase):
 
         try:
             setup = sqlite3.connect(path, isolation_level=None)
+            for pragma in [p.strip() for p in init.split(";") if p.strip()]:
+                setup.execute(pragma)
             setup.execute("CREATE TABLE stock (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
             setup.execute("INSERT INTO stock (id, n) VALUES (1, 0)")
             setup.close()
