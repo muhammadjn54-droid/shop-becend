@@ -6,7 +6,6 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db.models.deletion import ProtectedError
-from django.test import override_settings
 from PIL import Image
 from rest_framework import serializers
 from rest_framework.test import APITestCase
@@ -16,7 +15,6 @@ from .serializers import ProductSerializer
 from sales.models import Sale
 
 
-@override_settings(STORAGES={"default": {"BACKEND": "django.core.files.storage.InMemoryStorage"}, "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"}})
 class InventoryStabilityTests(APITestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="inventory-test", password="Strong-password123!")
@@ -101,7 +99,7 @@ class InventoryStabilityTests(APITestCase):
         self.assertEqual(self.product.images.count(), 0)
 
     def test_storage_failure_does_not_partially_edit_product(self):
-        with self.assertLogs("products.serializers", level="ERROR"), patch("django.core.files.storage.InMemoryStorage._save", side_effect=OSError("storage unavailable")):
+        with self.assertLogs("products.serializers", level="ERROR"), patch("django.core.files.storage.FileSystemStorage._save", side_effect=OSError("storage unavailable")):
             response = self.client.patch(self.url, {"name": "Should not save", "images": [self.image()]}, format="multipart")
         self.assertEqual(response.status_code, 503)
         self.product.refresh_from_db()
