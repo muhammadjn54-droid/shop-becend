@@ -21,9 +21,21 @@ class ProductAdmin(admin.ModelAdmin):
         "remaining_quantity",
         "purchase_price",
         "selling_price",
+        "is_archived",
     )
     search_fields = ("name", "barcode")
-    list_filter = ("arrival_date",)
+    list_filter = ("arrival_date", "is_archived")
+    readonly_fields = ("quantity_sold",)
+    actions = ("archive_products",)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.action(description="Архивировать выбранные товары")
+    def archive_products(self, request, queryset):
+        from django.utils import timezone
+
+        queryset.update(is_archived=True, updated_at=timezone.now())
 
 
 @admin.register(ProductImage)

@@ -9,12 +9,31 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: shop_test
+          POSTGRES_PASSWORD: local_ci_only
+          POSTGRES_DB: shop_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U shop_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
+      TEST_DATABASE_URL: ${{ matrix.database == 'postgres' && 'postgresql://shop_test:local_ci_only@localhost:5432/shop_test' || '' }}
       SECRET_KEY: ci-secret-key
       DEBUG: "True"
       ALLOWED_HOSTS: localhost,127.0.0.1
       CORS_ALLOWED_ORIGINS: http://localhost:5173
       CSRF_TRUSTED_ORIGINS: http://localhost:5173
+      DJANGO_SETTINGS_MODULE: shop_backend.test_settings
     steps:
       - name: Checkout
         uses: actions/checkout@v4

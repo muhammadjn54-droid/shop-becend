@@ -22,11 +22,15 @@ class SaleReturnSerializer(serializers.ModelSerializer):
 
 class SaleSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source="product.name", read_only=True)
+    product_is_archived = serializers.BooleanField(source="product.is_archived", read_only=True)
     returned_quantity = serializers.IntegerField(read_only=True)
     net_quantity = serializers.IntegerField(read_only=True)
     net_total_amount = serializers.DecimalField(
         max_digits=14, decimal_places=2, read_only=True
     )
+    net_cost_amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    net_profit = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
+    net_loss = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
 
     class Meta:
         model = Sale
@@ -34,6 +38,7 @@ class SaleSerializer(serializers.ModelSerializer):
             "id",
             "product",
             "product_name",
+            "product_is_archived",
             "quantity",
             "returned_quantity",
             "net_quantity",
@@ -41,6 +46,9 @@ class SaleSerializer(serializers.ModelSerializer):
             "purchase_price_per_item",
             "total_amount",
             "net_total_amount",
+            "net_cost_amount",
+            "net_profit",
+            "net_loss",
             "cost_amount",
             "profit",
             "loss",

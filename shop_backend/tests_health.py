@@ -1,8 +1,9 @@
-from django.test import SimpleTestCase
+from django.test import TestCase
 from django.urls import reverse
+from unittest.mock import patch
 
 
-class HealthEndpointTests(SimpleTestCase):
+class HealthEndpointTests(TestCase):
     """
     /api/health/ must never leak credentials, and must state plainly
     whether a shared database is in use.
@@ -23,3 +24,16 @@ class HealthEndpointTests(SimpleTestCase):
         body = self.client.get(reverse("health")).content.decode().lower()
         for secret in ("password", "postgres://", "postgresql://", "secret_key"):
             self.assertNotIn(secret, body)
+
+    def test_instance_id_is_stable_within_process(self):
+        first = self.client.get(reverse("health")).json()
+        second = self.client.get(reverse("health")).json()
+        self.assertEqual(first["instance"], second["instance"])
+
+    def test_database_failure_returns_503_without_exception_details(self):
+        with patch("shop_backend.health.connection.cursor", side_effect=RuntimeError("private-db-host")):
+            response = self.client.get(reverse("health"))
+        self.assertEqual(response.status_code, 503)
+        self.assertFalse(response.json()["db_reachable"])
+        self.assertEqual(response.json()["status"], "unavailable")
+        self.assertNotIn("private-db-host", response.content.decode())

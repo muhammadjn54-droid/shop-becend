@@ -1,158 +1,140 @@
 import base64
-import os
+import binascii
+import logging
 import uuid
-import urllib.request
+from contextlib import contextmanager
 from decimal import Decimal
-from urllib.parse import urlparse
 
+from django.conf import settings
 from django.core.files.base import ContentFile
+from django.core.validators import FileExtensionValidator
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
+from rest_framework.exceptions import APIException
 
-from .models import Product, ProductImage
+from .models import Product, ProductImage, validate_image_size
+
+logger = logging.getLogger(__name__)
+
+
+class ImageStorageError(APIException):
+    status_code = 503
+    default_detail = "Не удалось сохранить фотографии. Попробуйте ещё раз."
+
+
+@contextmanager
+def product_write():
+    """Roll back records and remove new uploads if a product write fails."""
+    uploaded_files = []
+    try:
+        with transaction.atomic():
+            yield uploaded_files
+    except Exception as exc:
+        for uploaded in uploaded_files:
+            if uploaded.name and uploaded._committed:
+                try:
+                    uploaded.storage.delete(uploaded.name)
+                except Exception:
+                    logger.exception("Could not remove an abandoned product image")
+        if isinstance(exc, IntegrityError):
+            # A concurrent request may win the barcode uniqueness race.
+            if "unique_barcode_per_user" in str(exc) or (
+                "products_product.user_id" in str(exc)
+                and "products_product.barcode" in str(exc)
+            ):
+                raise serializers.ValidationError(
+                    {"barcode": "Товар с таким штрихкодом уже существует"}
+                ) from exc
+        raise
+
+
+def save_image_record(instance, uploaded_files):
+    uploaded_files.append(instance.image)
+    try:
+        # Separate storage failures from database errors.
+        if instance.image and not instance.image._committed:
+            instance.image.save(instance.image.name, instance.image.file, save=False)
+    except Exception as exc:
+        logger.exception("Product image storage failed")
+        raise ImageStorageError() from exc
+    instance.save()
 
 
 class FlexibleImageField(serializers.ImageField):
-    """
-    Универсальное поле для изображения товара.
-    Поддерживает:
-    - Загрузку файла (multipart/form-data)
-    - Base64 строку (data:image/...)
-    - Ссылку на фото из интернета (http://... или https://...)
-    - Пустую строку ("" / "null" / "undefined")
-    - Сохранение существующего фото при обновлении товара (PUT / PATCH)
-    """
+    """Accept uploads/base64 and exact references to the current main image."""
+
+    def __init__(self, **kwargs):
+        validators = list(kwargs.pop("validators", []))
+        validators.extend([
+            FileExtensionValidator(allowed_extensions=["jpg", "jpeg", "png", "webp"]),
+            validate_image_size,
+        ])
+        super().__init__(validators=validators, **kwargs)
 
     def to_internal_value(self, data):
-        # 1. Пустые значения
-        if data in ("", "null", "undefined", None):
-            if (
-                self.parent
-                and getattr(self.parent, "instance", None)
-                and self.parent.instance.image
-            ):
-                return self.parent.instance.image
-            return None
-
-        # 2. Строковые данные (Base64, URL, имя существующего файла)
+        instance = getattr(self.parent, "instance", None)
+        current = getattr(instance, "image", None)
         if isinstance(data, str):
-            clean_str = data.strip()
-            if not clean_str or clean_str in ("", "null", "undefined"):
-                if (
-                    self.parent
-                    and getattr(self.parent, "instance", None)
-                    and self.parent.instance.image
-                ):
-                    return self.parent.instance.image
-                return None
+            data = data.strip()
+            if data in ("", "null", "undefined"):
+                if current:
+                    raise serializers.SkipField()
+                if self.allow_null:
+                    raise serializers.SkipField()
+                raise serializers.ValidationError("Передайте изображение.")
 
-            # Проверяем, не является ли строка текущим изображением товара
-            if (
-                self.parent
-                and getattr(self.parent, "instance", None)
-                and self.parent.instance.image
-            ):
-                current = self.parent.instance.image
+            if current:
+                references = {current.name, current.url}
+                request = self.context.get("request")
+                if request is not None:
+                    references.add(request.build_absolute_uri(current.url))
+                if data in references:
+                    # Keep the fresh image on the locked row, not a stale copy.
+                    raise serializers.SkipField()
+
+            if data.startswith("data:image/"):
                 try:
-                    if (
-                        clean_str == current.name
-                        or (hasattr(current, "url") and current.url in clean_str)
-                        or (current.name and current.name in clean_str)
-                    ):
-                        return current
-                except Exception:
-                    pass
-
-            # Base64 изображение
-            if clean_str.startswith("data:image"):
-                try:
-                    header, img_b64 = clean_str.split(";base64,")
-                    raw_ext = header.split("/")[-1].lower()
-                    if raw_ext in ("jpeg", "pjpeg"):
-                        ext = "jpg"
-                    elif raw_ext in ("png", "webp", "jpg"):
-                        ext = raw_ext
-                    else:
-                        ext = "jpg"
-
-                    file_name = f"{uuid.uuid4().hex[:12]}.{ext}"
-                    decoded = base64.b64decode(img_b64)
-                    file_obj = ContentFile(decoded, name=file_name)
-                    return super().to_internal_value(file_obj)
-                except Exception as exc:
-                    raise serializers.ValidationError(
-                        f"Не удалось распознать base64 изображение: {exc}"
+                    header, encoded = data.split(";base64,", 1)
+                    extension = header.removeprefix("data:image/").lower()
+                    if extension not in {"jpg", "jpeg", "png", "webp"}:
+                        raise ValueError("Unsupported image type")
+                    max_size = settings.MAX_IMAGE_SIZE_MB * 1024 * 1024
+                    if len(encoded) > 4 * ((max_size + 2) // 3):
+                        raise serializers.ValidationError(
+                            f"Размер изображения не должен превышать {settings.MAX_IMAGE_SIZE_MB} MB"
+                        )
+                    data = ContentFile(
+                        base64.b64decode(encoded, validate=True),
+                        name=f"{uuid.uuid4().hex}.{extension}",
                     )
+                except (ValueError, binascii.Error) as exc:
+                    raise serializers.ValidationError("Некорректное base64 изображение.") from exc
+            else:
+                raise serializers.ValidationError(
+                    "Загрузите файл изображения. Загрузка по внешней ссылке не поддерживается."
+                )
 
-            # URL из интернета (http / https)
-            parsed = urlparse(clean_str)
-            if parsed.scheme in ("http", "https"):
-                try:
-                    req = urllib.request.Request(
-                        clean_str, headers={"User-Agent": "Mozilla/5.0"}
-                    )
-                    with urllib.request.urlopen(req, timeout=10) as resp:
-                        content_type = resp.headers.get("content-type", "").lower()
-                        ext = "jpg"
-                        if "png" in content_type:
-                            ext = "png"
-                        elif "webp" in content_type:
-                            ext = "webp"
-                        elif "jpeg" in content_type or "jpg" in content_type:
-                            ext = "jpg"
-                        else:
-                            path_ext = os.path.splitext(parsed.path)[1].lstrip(".").lower()
-                            if path_ext in ("jpg", "jpeg", "png", "webp"):
-                                ext = "jpg" if path_ext == "jpeg" else path_ext
-
-                        file_name = f"{uuid.uuid4().hex[:12]}.{ext}"
-                        file_obj = ContentFile(resp.read(), name=file_name)
-                        return super().to_internal_value(file_obj)
-                except Exception as exc:
-                    if (
-                        self.parent
-                        and getattr(self.parent, "instance", None)
-                        and self.parent.instance.image
-                    ):
-                        return self.parent.instance.image
-                    raise serializers.ValidationError(
-                        f"Не удалось загрузить изображение по ссылке: {exc}"
-                    )
-
-        # 3. Обычный загруженный файл через форму
+        # Check size before Pillow parses the supplied file.
+        if hasattr(data, "size"):
+            self.run_validators(data)
         return super().to_internal_value(data)
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
-    """Сериализатор отдельной фотографии товара."""
-
     image = FlexibleImageField()
 
     class Meta:
         model = ProductImage
         fields = ("id", "image", "created_at")
-
-    def to_representation(self, instance):
-        ret = super().to_representation(instance)
-        if instance.image:
-            request = self.context.get("request")
-            if request is not None:
-                ret["image"] = request.build_absolute_uri(instance.image.url)
-            else:
-                try:
-                    ret["image"] = instance.image.url
-                except Exception:
-                    pass
-        return ret
+        read_only_fields = fields
 
 
 class ProductSerializer(serializers.ModelSerializer):
     image = FlexibleImageField(required=False, allow_null=True)
     images = ProductImageSerializer(many=True, read_only=True)
+    expected_updated_at = serializers.DateTimeField(required=False, write_only=True)
     barcode = serializers.CharField(
-        max_length=100,
-        required=False,
-        allow_blank=True,
-        allow_null=True,
+        max_length=100, required=False, allow_blank=True, allow_null=True,
         trim_whitespace=True,
         help_text="Штрихкод товара (строка). Уникален в пределах пользователя.",
     )
@@ -166,135 +148,90 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = (
-            "id",
-            "name",
-            "barcode",
-            "image",
-            "images",
-            "arrival_date",
-            "quantity_received",
-            "quantity_sold",
-            "remaining_quantity",
-            "purchase_price",
-            "selling_price",
-            "revenue",
-            "sold_cost",
-            "profit",
-            "loss",
-            "profit_per_item",
-            "created_at",
-            "updated_at",
+            "id", "name", "barcode", "image", "images", "arrival_date",
+            "quantity_received", "quantity_sold", "remaining_quantity",
+            "purchase_price", "selling_price", "revenue", "sold_cost", "profit",
+            "loss", "profit_per_item", "is_archived", "created_at", "updated_at",
+            "expected_updated_at",
         )
         read_only_fields = (
-            "id",
-            "images",
-            "quantity_sold",
-            "remaining_quantity",
-            "revenue",
-            "sold_cost",
-            "profit",
-            "loss",
-            "profit_per_item",
-            "created_at",
-            "updated_at",
+            "id", "images", "quantity_sold", "remaining_quantity", "revenue",
+            "sold_cost", "profit", "loss", "profit_per_item", "is_archived",
+            "created_at", "updated_at",
         )
 
-    def _save_multiple_images(self, product, images_list):
-        if not images_list:
-            return
-        field = FlexibleImageField()
-        field.bind(field_name="image", parent=self)
-        for img_item in images_list:
-            if not img_item:
+    def to_internal_value(self, data):
+        validated_data = super().to_internal_value(data)
+        # Responses contain gallery objects; requests accept JSON arrays or
+        # repeated multipart files under either established input key.
+        for key in ("images", "uploaded_images"):
+            if key not in data:
                 continue
+            images = data.getlist(key) if hasattr(data, "getlist") else data[key]
+            if not isinstance(images, list):
+                images = [images]
             try:
-                processed_file = field.to_internal_value(img_item)
-                if processed_file:
-                    ProductImage.objects.create(product=product, image=processed_file)
-            except Exception:
-                pass
+                validated_data["uploaded_images"] = serializers.ListField(
+                    child=FlexibleImageField(),
+                ).run_validation(images)
+            except serializers.ValidationError as exc:
+                raise serializers.ValidationError({"images": exc.detail}) from exc
+            break
+        return validated_data
 
-        if not product.image and product.images.exists():
-            product.image = product.images.first().image
-            product.save(update_fields=["image"])
+    @staticmethod
+    def _save_multiple_images(product, images, uploaded_files):
+        for image in images:
+            save_image_record(ProductImage(product=product, image=image), uploaded_files)
+        if not product.image:
+            first = product.images.first()
+            if first:
+                product.image = first.image
+                product.save(update_fields=["image"])
 
     def create(self, validated_data):
-        product = super().create(validated_data)
-        request = self.context.get("request")
-        images_list = []
-        if request is not None:
-            if hasattr(request.data, "getlist"):
-                images_list = (
-                    request.data.getlist("images")
-                    or request.data.getlist("uploaded_images")
-                )
-            if not images_list and "images" in request.data:
-                val = request.data.get("images")
-                if isinstance(val, list):
-                    images_list = val
-                elif val:
-                    images_list = [val]
-            if not images_list and hasattr(request, "FILES"):
-                images_list = (
-                    request.FILES.getlist("images")
-                    or request.FILES.getlist("uploaded_images")
-                )
-
-        self._save_multiple_images(product, images_list)
+        images = validated_data.pop("uploaded_images", [])
+        validated_data.pop("expected_updated_at", None)
+        with product_write() as uploaded_files:
+            product = Product(**validated_data)
+            if product.image:
+                save_image_record(product, uploaded_files)
+            else:
+                product.save()
+            self._save_multiple_images(product, images, uploaded_files)
         return product
 
     def update(self, instance, validated_data):
-        product = super().update(instance, validated_data)
-        request = self.context.get("request")
-        images_list = []
-        if request is not None:
-            if hasattr(request.data, "getlist"):
-                images_list = (
-                    request.data.getlist("images")
-                    or request.data.getlist("uploaded_images")
+        images = validated_data.pop("uploaded_images", [])
+        expected = validated_data.pop("expected_updated_at", None)
+        with product_write() as uploaded_files:
+            product = Product.objects.select_for_update().get(pk=instance.pk)
+            if product.is_archived:
+                raise serializers.ValidationError("Товар находится в архиве.")
+            if expected is not None and product.updated_at != expected:
+                raise serializers.ValidationError(
+                    "Товар изменился. Обновите страницу и повторите изменения."
                 )
-            if not images_list and "images" in request.data:
-                val = request.data.get("images")
-                if isinstance(val, list):
-                    images_list = val
-                elif val:
-                    images_list = [val]
-            if not images_list and hasattr(request, "FILES"):
-                images_list = (
-                    request.FILES.getlist("images")
-                    or request.FILES.getlist("uploaded_images")
-                )
-
-        if images_list:
-            self._save_multiple_images(product, images_list)
+            if validated_data.get("quantity_received", product.quantity_received) < product.quantity_sold:
+                raise serializers.ValidationError({
+                    "quantity_received": "Количество поступившего товара не может быть меньше уже проданного"
+                })
+            for key, value in validated_data.items():
+                setattr(product, key, value)
+            if validated_data.get("image"):
+                save_image_record(product, uploaded_files)
+            else:
+                product.save()
+            self._save_multiple_images(product, images, uploaded_files)
         return product
 
     def to_representation(self, instance):
         ret = super().to_representation(instance)
-        request = self.context.get("request")
-        if instance.image:
-            if request is not None:
-                ret["image"] = request.build_absolute_uri(instance.image.url)
-            else:
-                try:
-                    ret["image"] = instance.image.url
-                except Exception:
-                    pass
-
-        images_qs = instance.images.all()
-        if images_qs.exists():
-            ret["images"] = ProductImageSerializer(
-                images_qs, many=True, context=self.context
-            ).data
-        elif ret.get("image"):
+        if not ret["images"] and ret.get("image"):
             ret["images"] = [{"id": 0, "image": ret["image"]}]
-        else:
-            ret["images"] = []
-
         return ret
 
     def _resolve_owner(self):
-        """Определяет владельца товара: request.user при create, instance.user при update."""
         if self.instance is not None and getattr(self.instance, "user_id", None):
             return self.instance.user
         request = self.context.get("request")
@@ -305,21 +242,16 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def validate_barcode(self, value):
         barcode = (value or "").strip()
-
         if not barcode:
             return None
-
         user = self._resolve_owner()
         if user is None:
             return barcode
-
-        duplicates = Product.objects.filter(user=user, barcode=barcode)
+        duplicates = Product.objects.filter(user=user, barcode=barcode, is_archived=False)
         if self.instance is not None and self.instance.pk:
             duplicates = duplicates.exclude(pk=self.instance.pk)
-
         if duplicates.exists():
             raise serializers.ValidationError("Товар с таким штрихкодом уже существует")
-
         return barcode
 
     def validate_quantity_received(self, value):

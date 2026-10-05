@@ -53,6 +53,7 @@ class Product(models.Model):
     selling_price = models.DecimalField(
         max_digits=12, decimal_places=2, verbose_name="Цена продажи за 1 шт."
     )
+    is_archived = models.BooleanField(default=False, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -62,7 +63,10 @@ class Product(models.Model):
             models.UniqueConstraint(
                 fields=["user", "barcode"],
                 name="unique_barcode_per_user",
-                condition=models.Q(barcode__isnull=False) & ~models.Q(barcode=""),
+                condition=(
+                    models.Q(barcode__isnull=False, is_archived=False)
+                    & ~models.Q(barcode="")
+                ),
             ),
         ]
 
