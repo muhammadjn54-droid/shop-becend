@@ -21,8 +21,14 @@ with tempfile.TemporaryDirectory(prefix="shop-ui-check-") as directory:
     settings.STORAGES["default"] = {"BACKEND": "django.core.files.storage.FileSystemStorage"}
     settings.CORS_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5175", "http://127.0.0.1:5175"]
     call_command("migrate", interactive=False, verbosity=0)
-    get_user_model().objects.create_user(username="ui-check", password="Temporary-UI-Check123!", first_name="Проверка", email="ui-check@example.test")
-    print("Disposable UI account: ui-check / Temporary-UI-Check123!", flush=True)
+    get_user_model().objects.create_user(
+        username="ui-check-renamed",
+        password="Temporary-UI-Check123!",
+        first_name="Али",
+        last_name="Санҷиш",
+        email="ui-check@example.test",
+    )
+    print("Disposable UI account: ui-check-renamed / Temporary-UI-Check123!", flush=True)
     port = os.environ.get("UI_SMOKE_PORT", "8000")
     try:
         call_command("runserver", f"127.0.0.1:{port}", use_reloader=False)
